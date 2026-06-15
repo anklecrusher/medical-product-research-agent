@@ -72,3 +72,24 @@
 后续事项：
 
 - 后续若技术选型、隐私策略、模块边界或协作规则变化，应同步更新 `AGENTS.md`。
+
+## 2026-06-15 / Git 工具路径约定
+
+修改文件：
+
+- `AGENTS.md`
+- `LOG.md`
+
+改动摘要：
+
+- 在 `AGENTS.md` 中新增 Git 使用约定。
+- 明确后续线程涉及 git 操作时，应直接使用完整路径 `D:\Users\gongjx\AppData\Local\Programs\Git\mingw64\bin\git.exe`。
+- 记录 GitHub CLI 路径 `C:\Users\gongjx\tools\gh\bin\gh.exe`。
+
+关键决定：
+
+- 不再让后续线程先尝试普通 `git` 命令，避免重复遇到 `error launching git`。
+
+后续事项：
+
+- 本次文档变更需要提交并推送到 GitHub。

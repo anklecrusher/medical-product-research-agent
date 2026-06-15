@@ -282,6 +282,13 @@
 - 更新流程应考虑 `git pull` 后的依赖同步和数据库迁移。
 - 生成文件、缓存和私有数据必须被 `.gitignore` 排除。
 
+Git 使用约定：
+
+- 本机普通 `git` wrapper 可能出现 `error launching git`。
+- 后续所有线程涉及 git 操作时，直接使用可工作的完整路径：`D:\Users\gongjx\AppData\Local\Programs\Git\mingw64\bin\git.exe`。
+- 不要先尝试普通 `git` 命令再在报错后切换；应一开始就使用上述完整路径，避免重复排查。
+- GitHub CLI 已安装在：`C:\Users\gongjx\tools\gh\bin\gh.exe`。
+
 ## 14. 维护与演进原则
 
 项目后续会持续演进，因此设计时应考虑：
@@ -318,4 +325,3 @@
 - 本地资料隐私边界清晰。
 
 所有后续开发都应围绕这些目标取舍。
-
