@@ -1,0 +1,61 @@
+# {{ report.title }}
+
+{% if report.subtitle -%}
+{{ report.subtitle }}
+
+{% endif -%}
+## 1. 核心结论
+
+{% if report.core_conclusions -%}
+{% for item in report.core_conclusions -%}
+- {{ item }}
+{% endfor %}
+{% else -%}
+- 暂无足够证据形成核心结论，标记为 needs_review。
+{% endif %}
+
+{% if figures_by_section.get("core_conclusion") -%}
+{% for figure in figures_by_section.get("core_conclusion") -%}
+{{ render_figure(figure) }}
+{% endfor %}
+{% endif -%}
+
+{% for section in report.sections -%}
+## {{ loop.index + 1 }}. {{ section.title }}
+
+{% if section.content_markdown -%}
+{{ section.content_markdown }}
+{% else -%}
+本节证据不足，建议后续补充。
+{% endif %}
+
+{% set section_figures = figures_by_section.get(section.section_id, []) + figures_by_section.get(section.title, []) -%}
+{% if section_figures -%}
+{% for figure in section_figures -%}
+{{ render_figure(figure) }}
+{% endfor %}
+{% elif section.figure_ids -%}
+> 未找到适合本节的来源图，建议后续人工补图。
+{% endif %}
+
+{% endfor -%}
+## 风险、边界与未确认项
+
+{% if report.risks_and_gaps -%}
+{% for item in report.risks_and_gaps -%}
+- {{ item }}
+{% endfor %}
+{% else -%}
+- 未确认项待补充，所有缺少来源的结论均应标记为 needs_review。
+{% endif %}
+
+## 参考文献与来源链接
+
+{% if report.references -%}
+{% for ref in report.references -%}
+- {{ ref }}
+{% endfor %}
+{% else -%}
+- 暂无参考来源。
+{% endif %}
+
