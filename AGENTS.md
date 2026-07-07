@@ -285,7 +285,8 @@
 Git 使用约定：
 
 - 本机普通 `git` wrapper 可能出现 `error launching git`。
-- 后续所有线程涉及 git 操作时，直接使用可工作的完整路径：`D:\Users\gongjx\AppData\Local\Programs\Git\mingw64\bin\git.exe`。
+- 历史可用路径为 `D:\Users\gongjx\AppData\Local\Programs\Git\mingw64\bin\git.exe`；在当前机器上该路径不可用。
+- 当前机器涉及 git 操作时，直接使用已验证可工作的完整路径：`C:\Users\ankle crusher\scoop\apps\git\current\cmd\git.exe`。
 - 不要先尝试普通 `git` 命令再在报错后切换；应一开始就使用上述完整路径，避免重复排查。
 - GitHub CLI 已安装在：`C:\Users\gongjx\tools\gh\bin\gh.exe`。
 

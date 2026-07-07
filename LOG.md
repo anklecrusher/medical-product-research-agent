@@ -645,3 +645,105 @@
 - 如果继续在原机器做 git 操作，必须使用 `D:\Users\gongjx\AppData\Local\Programs\Git\mingw64\bin\git.exe`；迁移到新机器后应确认 Git 路径是否变化，并更新交接说明或本机约定。
 - 私有资料进入 LLM 前必须继续走隐私门禁，默认不得外发 `user_uploaded_private` / `internal_private` 内容。
 - 本线程产生的本地解析样例输出位于 `outputs/local_ingest_rtscale/` 与 `outputs/local_ingest_dsy202509/`，属于运行产物，不应作为代码提交。
+
+## 2026-07-07 / Todo 8 CLI 文档与日志更新
+
+修改文件：
+
+- `examples/run_source_workflow.py`
+- `README.md`
+- `LOG.md`
+- `.omo/evidence/task-8-mvp-flow-reroute.md`
+
+改动摘要：
+
+- 更新 `run_source_workflow.py` 的说明与终端输出，去掉源工作流仍使用 mock evidence/report 节点的旧表述。
+- CLI 运行结束后现在打印 sources、documents、evidence、claims、artifacts、errors 计数，并逐项列出 `sources.json`、`documents.json`、`evidence.json`、`claims.json`、`report.md`、`report.pdf`、`workflow_state.json`、`run.log` 的路径。
+- 更新 README 源工作流章节，明确当前 CLI-first 路径会写出 Markdown 报告与 `report.pdf`，并列出完整产物清单。
+- 新增 Todo 8 证据文件，记录 help、CLI smoke、stale-language scan、dirty worktree 与运行产物清理结果。
+
+关键决定：
+
+- 本次只更新 CLI/docs/log/evidence 表面，不修改核心 workflow、evidence、report 或 PDF 生成逻辑。
+- README 只记录产物名称和运行命令，不记录 `.env`、API key、运行时文件正文或私有资料内容。
+- 现场 CLI smoke 产生的 `outputs/task8_source_workflow_check/` 仅用于验证 stdout 路径展示，检查后已删除，保持运行产物不进入提交范围。
+
+测试与检查：
+
+- `.\.venv\Scripts\python.exe examples\run_source_workflow.py --help` 成功。
+- `.\.venv\Scripts\python.exe -m py_compile examples\run_source_workflow.py` 成功。
+- `.\.venv\Scripts\python.exe examples\run_source_workflow.py '调研 DBS 电极阻抗的论文证据' --output-dir outputs\task8_source_workflow_check` 成功，stdout 打印完整产物路径；该 live smoke 出现 5 条 connector/parser 错误但 workflow 仍生成可定位产物路径，后续 Todo 9 继续做完整 artifact audit。
+- stale-language scan 在 `README.md`、`examples/run_source_workflow.py`、`LOG.md` 中未发现源工作流旧占位说明。
+- 使用 `C:\Users\ankle crusher\scoop\apps\git\current\cmd\git.exe status --short` 检查工作区；当前仍包含其他 Todo 已产生的 AGENTS、pyproject、workflow、测试和新模块变更，本次未回退他人改动。
+
+后续事项：
+
+- Todo 9 继续执行 deterministic end-to-end CLI smoke 和 artifact audit，验证 JSON 可解析、PDF 头、workflow_state 与报告内容。
+- 后续如要提交，继续排除 `.env`、`.venv/`、`data/`、`outputs/`、`cache/`、`uploads/` 和私有资料。
+
+## 2026-07-07 / MVP flow reroute 完整实现与最终合规修正
+
+修改文件：
+
+- `AGENTS.md`
+- `README.md`
+- `pyproject.toml`
+- `examples/run_source_workflow.py`
+- `src/medical_research_agent/workflow/nodes.py`
+- `src/medical_research_agent/evidence.py`
+- `src/medical_research_agent/evidence_dedup.py`
+- `src/medical_research_agent/claim_verifier.py`
+- `src/medical_research_agent/report_models.py`
+- `src/medical_research_agent/report_content.py`
+- `src/medical_research_agent/report_sections.py`
+- `src/medical_research_agent/report_writer.py`
+- `src/medical_research_agent/renderers/__init__.py`
+- `src/medical_research_agent/renderers/pdf.py`
+- `tests/test_evidence.py`
+- `tests/test_evidence_dedup.py`
+- `tests/test_claim_verifier.py`
+- `tests/test_report_writer.py`
+- `tests/test_pdf_renderer.py`
+- `tests/test_mvp_flow_expectations.py`
+- `.omo/plans/mvp-flow-reroute.md`
+- `.omo/evidence/task-1-mvp-flow-reroute.md` through `.omo/evidence/task-10-mvp-flow-reroute.md`
+- `.omo/evidence/mvp-flow-reroute-gate-review.md`
+- `.omo/evidence/f1-fix-mvp-flow-reroute.md`
+- `LOG.md`
+
+改动摘要：
+
+- 本条记录补全 2026-07-07 `mvp-flow-reroute` 的完整实现事实，并取代上一条 “Todo 8 CLI 文档与日志更新” 可能造成的误解：Todo 8 只记录 CLI/docs 表面更新，不代表整个实现范围。
+- 将源工作流从早期 mock evidence/report 终点重路由为 CLI-first MVP 闭环：检索与解析后进入确定性证据抽取、证据去重、报告章节生成、claim 核查和 PDF 渲染。
+- 新增结构化证据抽取与产品参数抽取逻辑，保持来源链接、来源类型、隐私标记、单位/参数字段和 `needs_review` 状态可追溯。
+- 新增证据去重与冲突标记，用于合并重复证据、保留来源边界，并在冲突或缺证据时显式要求人工复核。
+- 新增报告数据模型、章节规划/正文生成和 Markdown 写作模块，使输出更贴近医疗产品经理调研报告：关键结论、参数表、证据表、风险/未确认项和参考来源。
+- 新增 claim verifier，将报告中的关键结论与证据支撑状态关联，避免把厂商宣传、单篇论文或未确认信息写成确定性结论。
+- 新增 ReportLab PDF renderer，并把 `report.pdf` 纳入 CLI 产物清单；`report.md` 和 `report.pdf` 都作为最终可分享/归档产物。
+- 更新 CLI 示例和 README，使 `examples/run_source_workflow.py` 输出 sources、documents、evidence、claims、artifacts、errors 计数，并列出 `sources.json`、`documents.json`、`evidence.json`、`claims.json`、`report.md`、`report.pdf`、`workflow_state.json`、`run.log` 路径。
+- 新增针对 evidence、dedup、claim verifier、report writer、PDF renderer 和完整 MVP flow 预期的测试。
+- 清理最终合规阻塞：`outputs/f3_mvp_flow_smoke/` 运行目录已不存在；旧 Task 9 gate review 的 `REJECT` 已在证据中标注为被后续 exit-code receipt 和确认性审查 supersede。
+
+关键决定：
+
+- 继续保持 CLI-first MVP，不引入 FastAPI、React/Vite、数据库任务存储、auth 或 dashboard。
+- 本轮不引入自由自治 agent；工作流仍按 `AGENTS.md` 的 workflow-first 原则通过明确节点和中间产物传递状态。
+- 源工作流的证据/报告/PDF生成采用确定性本地逻辑，不调用 LLM；私有来源仍默认本地处理，外部 LLM 门禁保持不放松。
+- 新增 PDF 能力选择轻量稳定的 `reportlab>=4.2,<5`，不为 MVP 引入更重的浏览器渲染链路。
+- 运行产物、私有资料和缓存继续通过 `.gitignore` 排除；`.omo/evidence/` 只保存审查证据，不保存私有正文或运行输出目录。
+- 旧日志中 “真实证据抽取、报告写作、引用核查、PDF 输出尚未实现” 的状态已被本条记录 supersede；当前剩余问题应按下方后续事项理解。
+
+测试与检查：
+
+- `.\.venv\Scripts\python.exe -m pytest -q` 通过：`47 passed, 1 warning`；warning 来自已安装 `langgraph` 包的 pending deprecation。
+- Task 9 CLI smoke 后续补充了直接 exit-code receipt：`LASTEXITCODE: 0`，并确认生成 `report.pdf` 后清理 smoke 输出目录。
+- Task 9 artifact audit 可解析 JSON，并记录 `workflow_state.json` 结束在 `render_outputs`、task status 为 `completed`、`report.pdf` 以 `%PDF` 开头、`report.md` 无 stale Mock wording、recoverable connector/parser errors 被记录。
+- Todo 10 检查确认 `outputs/`、`data/`、`cache/`、`uploads/` 被 `.gitignore` 忽略，运行根目录为空，已知 smoke 输出目录不存在。
+- F1 修正检查确认 `outputs/f3_mvp_flow_smoke/` 不存在，`LOG.md` 已补全完整实现记录，旧 Task 9 `REJECT` 已有 supersession note。
+
+后续事项：
+
+- 提交前仍需决定是否纳入 `.omo` 下的计划/证据文件；`.omo/boulder.json`、`.omo/drafts/`、`.omo/start-work/ledger.jsonl` 属于执行元数据，默认不建议进入普通 feature commit。
+- `src/medical_research_agent/workflow/nodes.py` 仍偏大，后续可在不改变行为的前提下拆分节点实现；本次 F1 修正按要求未编辑产品代码。
+- 后续可继续增强真实网页/PDF 表格抽取、页码定位、厂商/监管 connector 精度、NMPA/NICE/FDA PMA/recall/EUDAMED 等数据源。
+- 如未来接入真实 LLM 章节写作，必须继续保留私有资料默认本地处理和可审计外发门禁。

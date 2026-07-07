@@ -2,7 +2,7 @@
 
 面向医疗产品经理的本地优先调研系统骨架。
 
-当前仓库先提供项目基础结构、配置入口和核心 Pydantic schema。后续 workflow、connector、报告生成、PDF 渲染和前端应基于这些 schema 继续扩展。
+当前仓库已提供项目基础结构、配置入口、核心 Pydantic schema、LangGraph workflow 骨架、公开来源 connector/parser、结构化证据抽取、claim 核查、Markdown/PDF 报告渲染和 CLI 示例。后续前端工作台和更完整的内容审计会基于这些已落地的流程继续扩展。
 
 ## Local Runtime Directories
 
@@ -94,11 +94,22 @@ When `--output-dir` is set, the example writes:
 - `sources.json`
 - `documents.json`
 
-The LangGraph workflow can also run the real source retrieval and parsing nodes while keeping later evidence/report nodes as mock placeholders:
+The LangGraph workflow can also run the CLI-first source workflow: real source retrieval/parsing feeds deterministic evidence extraction, claim checks, Markdown report generation, and PDF rendering.
 
 ```powershell
 .\.venv\Scripts\python.exe examples\run_source_workflow.py "调研 DBS 电极阻抗的论文证据" --output-dir outputs\source_workflow_demo
 ```
+
+The command prints task counts plus direct artifact paths. The run writes:
+
+- `sources.json`
+- `documents.json`
+- `evidence.json`
+- `claims.json`
+- `report.md`
+- `report.pdf`
+- `workflow_state.json`
+- `run.log`
 
 ## Local Private File Ingestion
 

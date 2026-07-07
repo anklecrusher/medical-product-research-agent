@@ -1,12 +1,12 @@
-"""Mock workflow nodes with clear seams for future real implementations."""
+"""Workflow nodes for mock and source-backed medical research runs."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
+from medical_research_agent.claim_verifier import ClaimVerificationInputs, verify_claim_links
 from medical_research_agent.config import get_settings
 from medical_research_agent.connectors import (
     ClinicalTrialsConnector,
@@ -18,18 +18,18 @@ from medical_research_agent.connectors import (
     SearchRequest,
     SemanticScholarConnector,
 )
+from medical_research_agent.evidence import extract_evidence_from_documents
+from medical_research_agent.evidence_dedup import deduplicate_evidence_items
 from medical_research_agent.parsers import DocumentParseError, PDFParser, WebPageParser
+from medical_research_agent.report_content import build_render_report
+from medical_research_agent.report_models import ReportInputs
 from medical_research_agent.report_templates import render_report_markdown
+from medical_research_agent.report_writer import draft_evidence_report
+from medical_research_agent.renderers import render_markdown_pdf
 from medical_research_agent.schemas import (
     ArtifactFormat,
-    Claim,
-    ClaimStatus,
     DocumentFormat,
-    EvidenceItem,
-    EvidenceKind,
-    EvidenceStatus,
     ParsedDocument,
-    ProductSpec,
     ReportArtifact,
     ReportSection,
     SourceRecord,
@@ -55,6 +55,17 @@ def _task_output_dir(state: WorkflowState) -> Path:
     if task.output_dir:
         return Path(task.output_dir)
     return get_settings().outputs_dir / task.task_id
+
+
+def _report_inputs(state: WorkflowState) -> ReportInputs:
+    return ReportInputs(
+        task=state["task"],
+        planned_sections=state.get("report_sections", []),
+        sources=state.get("sources", []),
+        documents=state.get("documents", []),
+        evidence=state.get("evidence", []),
+        product_specs=state.get("product_specs", []),
+    )
 
 
 def parse_intent(state: WorkflowState) -> dict[str, Any]:
@@ -383,82 +394,28 @@ def _mock_document_for_source(query: str, task_id: str, source: SourceRecord) ->
 
 
 def extract_evidence(state: WorkflowState) -> dict[str, Any]:
-    """Extract mock structured evidence from parsed documents."""
+    """Extract deterministic structured evidence from parsed documents."""
 
     task = state["task"]
-    evidence: list[EvidenceItem] = []
-    product_specs: list[ProductSpec] = []
-
-    for document in state.get("documents", []):
-        source = next(item for item in state["sources"] if item.source_id == document.source_id)
-        if source.source_type == SourceType.VENDOR_PUBLIC_DOC:
-            item = EvidenceItem(
-                task_id=task.task_id,
-                source_id=source.source_id,
-                document_id=document.document_id,
-                kind=EvidenceKind.PRODUCT_PARAMETER,
-                statement="Mock vendor document lists stimulation frequency range for comparison.",
-                value="2-130",
-                unit="Hz",
-                product_name="Mock Medical Device",
-                parameter_name="stimulation_frequency",
-                quote="Mock quoted vendor parameter range.",
-                location="mock section 2",
-                confidence=0.72,
-                metadata={"mock": True},
-            )
-            evidence.append(item)
-            product_specs.append(
-                ProductSpec(
-                    task_id=task.task_id,
-                    product_name="Mock Medical Device",
-                    parameter_name="stimulation_frequency",
-                    value="2-130",
-                    unit="Hz",
-                    source_ids=[source.source_id],
-                    evidence_ids=[item.evidence_id],
-                    notes="Mock product parameter prepared for workflow integration.",
-                )
-            )
-        elif source.source_type == SourceType.PUBLIC_REGULATORY:
-            evidence.append(
-                EvidenceItem(
-                    task_id=task.task_id,
-                    source_id=source.source_id,
-                    document_id=document.document_id,
-                    kind=EvidenceKind.REGULATORY_FINDING,
-                    statement="Mock regulatory source should be separated from clinical conclusions.",
-                    quote="Mock regulatory classification and indication text.",
-                    location="mock regulatory note",
-                    confidence=0.65,
-                    metadata={"mock": True},
-                )
-            )
-        else:
-            evidence.append(
-                EvidenceItem(
-                    task_id=task.task_id,
-                    source_id=source.source_id,
-                    document_id=document.document_id,
-                    kind=EvidenceKind.ENGINEERING_NOTE,
-                    statement="Mock evidence notes that parameter interpretation requires source context.",
-                    quote="Mock engineering interpretation evidence.",
-                    location="mock paragraph 1",
-                    confidence=0.68,
-                    metadata={"mock": True},
-                )
-            )
+    extracted = extract_evidence_from_documents(
+        task.task_id,
+        state.get("sources", []),
+        state.get("documents", []),
+    )
 
     return {
-        "evidence": evidence,
-        "product_specs": product_specs,
+        "evidence": extracted.evidence,
+        "product_specs": extracted.product_specs,
         "current_step": "extract_evidence",
-        "intermediate": {"evidence_count": len(evidence), "product_spec_count": len(product_specs)},
+        "intermediate": {
+            "evidence_count": len(extracted.evidence),
+            "product_spec_count": len(extracted.product_specs),
+        },
         "node_logs": _log(
             "extract_evidence",
-            "Extracted mock structured evidence.",
-            evidence_count=len(evidence),
-            product_spec_count=len(product_specs),
+            "Extracted deterministic structured evidence.",
+            evidence_count=len(extracted.evidence),
+            product_spec_count=len(extracted.product_specs),
         ),
     }
 
@@ -466,27 +423,28 @@ def extract_evidence(state: WorkflowState) -> dict[str, Any]:
 def deduplicate_evidence(state: WorkflowState) -> dict[str, Any]:
     """Deduplicate evidence while preserving status for conflict checks."""
 
-    seen: set[tuple[str | None, str, str | None]] = set()
-    deduped: list[EvidenceItem] = []
-    duplicates = 0
-
-    for item in state.get("evidence", []):
-        key = (item.parameter_name, item.statement, item.unit)
-        if key in seen:
-            duplicates += 1
-            continue
-        seen.add(key)
-        deduped.append(item)
+    deduped = deduplicate_evidence_items(
+        state.get("evidence", []),
+        state.get("product_specs", []),
+    )
 
     return {
-        "evidence": deduped,
+        "evidence": deduped.evidence,
+        "product_specs": deduped.product_specs,
         "current_step": "deduplicate_evidence",
-        "intermediate": {"deduplicated_evidence_count": len(deduped), "duplicate_count": duplicates},
+        "intermediate": {
+            "deduplicated_evidence_count": len(deduped.evidence),
+            "deduplicated_product_spec_count": len(deduped.product_specs),
+            "duplicate_count": deduped.duplicate_count,
+            "conflict_count": deduped.conflict_count,
+        },
         "node_logs": _log(
             "deduplicate_evidence",
-            "Deduplicated mock evidence.",
-            evidence_count=len(deduped),
-            duplicate_count=duplicates,
+            "Deduplicated evidence and marked parameter conflicts.",
+            evidence_count=len(deduped.evidence),
+            product_spec_count=len(deduped.product_specs),
+            duplicate_count=deduped.duplicate_count,
+            conflict_count=deduped.conflict_count,
         ),
     }
 
@@ -524,121 +482,69 @@ def plan_report(state: WorkflowState) -> dict[str, Any]:
         "report_sections": sections,
         "current_step": "plan_report",
         "intermediate": {"section_count": len(sections)},
-        "node_logs": _log("plan_report", "Planned mock report sections.", section_count=len(sections)),
+        "node_logs": _log("plan_report", "Planned report sections.", section_count=len(sections)),
     }
 
 
 def write_report(state: WorkflowState) -> dict[str, Any]:
-    """Draft report sections and claims from mock evidence."""
+    """Draft report sections and claims from extracted evidence."""
 
-    task = state["task"]
-    evidence = state.get("evidence", [])
-    evidence_ids = [item.evidence_id for item in evidence]
-    source_ids = [item.source_id for item in evidence]
-    sections: list[ReportSection] = []
-
-    for section in state.get("report_sections", []):
-        if section.title.startswith("参数"):
-            section.content_markdown = (
-                "| 参数/主题 | Mock 结论 | 来源状态 |\n"
-                "|---|---|---|\n"
-                "| stimulation_frequency | 2-130 Hz 为 mock 厂商参数，用于验证参数表链路。 | vendor_public_doc |\n"
-            )
-        elif section.title.startswith("工程"):
-            section.content_markdown = (
-                "不同来源的参数需要区分论文证据、厂商资料和监管资料；"
-                "当前内容均为 mock 数据，不能作为产品或临床结论。"
-            )
-        else:
-            section.content_markdown = (
-                "- mock 监管资料仅用于验证 workflow 字段流转。\n"
-                "- 真实 connector 接入后应检查适应证、注册状态和资料发布日期。"
-            )
-        section.status = "draft"
-        section.claim_ids = []
-        sections.append(section)
-
-    claims = [
-        Claim(
-            task_id=task.task_id,
-            text="Mock vendor parameter evidence can flow into the report parameter table.",
-            evidence_ids=evidence_ids[:1],
-            source_ids=source_ids[:1],
-        ),
-        Claim(
-            task_id=task.task_id,
-            text="Mock workflow keeps source type boundaries visible before final writing.",
-            evidence_ids=evidence_ids,
-            source_ids=source_ids,
-        ),
-    ]
-    claim_ids = [claim.claim_id for claim in claims]
-    for section in sections:
-        section.claim_ids = claim_ids
-
+    draft = draft_evidence_report(_report_inputs(state))
     return {
-        "report_sections": sections,
-        "claims": claims,
+        "report_sections": draft.sections,
+        "claims": draft.claims,
         "current_step": "write_report",
-        "intermediate": {"claim_count": len(claims)},
-        "node_logs": _log("write_report", "Drafted mock report sections and claims.", claim_count=len(claims)),
+        "intermediate": {"claim_count": len(draft.claims)},
+        "node_logs": _log("write_report", "Drafted evidence-driven report sections and claims.", claim_count=len(draft.claims)),
     }
 
 
 def verify_claims(state: WorkflowState) -> dict[str, Any]:
     """Mark claims as supported only when linked evidence and sources exist."""
 
-    verified: list[Claim] = []
-    for claim in state.get("claims", []):
-        if claim.evidence_ids and claim.source_ids:
-            claim.status = ClaimStatus.SUPPORTED
-            claim.verification_note = "Mock verification: claim has linked evidence and sources."
-        else:
-            claim.status = ClaimStatus.NEEDS_REVIEW
-            claim.verification_note = "Mock verification: missing evidence or source link."
-        verified.append(claim)
-
-    for item in state.get("evidence", []):
-        item.status = EvidenceStatus.VERIFIED
+    result = verify_claim_links(
+        ClaimVerificationInputs(
+            claims=state.get("claims", []),
+            evidence=state.get("evidence", []),
+            sources=state.get("sources", []),
+            sections=state.get("report_sections", []),
+        )
+    )
 
     return {
-        "claims": verified,
+        "claims": result.claims,
         "evidence": state.get("evidence", []),
+        "report_sections": result.sections,
         "current_step": "verify_claims",
-        "intermediate": {"verified_claim_count": len(verified)},
-        "node_logs": _log("verify_claims", "Verified mock claims by evidence linkage.", claim_count=len(verified)),
+        "intermediate": {
+            "verified_claim_count": len(result.claims),
+            "supported_claim_count": result.supported_count,
+            "partial_claim_count": result.partial_count,
+            "needs_review_claim_count": result.review_count,
+        },
+        "node_logs": _log(
+            "verify_claims",
+            "Verified claims against existing evidence/source IDs.",
+            claim_count=len(result.claims),
+            supported_count=result.supported_count,
+            partial_count=result.partial_count,
+            needs_review_count=result.review_count,
+        ),
     }
 
 
 def render_outputs(state: WorkflowState) -> dict[str, Any]:
-    """Render a mock Markdown report artifact and persist run state."""
+    """Render durable Markdown, JSON, state/log, and PDF artifacts."""
 
     task = state["task"]
     output_dir = _task_output_dir(state)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    references = []
-    for source in state.get("sources", []):
-        source_ref = f"{source.title}: {source.url}" if source.url else source.title
-        references.append(source_ref)
-
-    report = SimpleNamespace(
-        title=task.title or "Mock 医疗产品调研报告",
-        subtitle=f"任务 ID：{task.task_id}",
-        core_conclusions=[
-            "当前为 mock workflow 输出，用于验证从一句需求到报告 artifact 的状态流转。",
-            "所有结论均带 mock 来源链路，真实内容需由后续 connector/extractor/writer 接入。",
-        ],
-        sections=state.get("report_sections", []),
-        risks_and_gaps=[
-            "mock 数据不能用于真实产品、临床或注册判断。",
-            "后续需接入真实检索、解析、证据抽取和引用核查。",
-        ],
-        references=references,
-    )
+    report = build_render_report(_report_inputs(state))
     markdown = render_report_markdown(report)
 
     report_path = output_dir / "report.md"
+    pdf_path = output_dir / "report.pdf"
     sources_path = output_dir / "sources.json"
     documents_path = output_dir / "documents.json"
     evidence_path = output_dir / "evidence.json"
@@ -663,19 +569,38 @@ def render_outputs(state: WorkflowState) -> dict[str, Any]:
         encoding="utf-8",
     )
 
-    task.status = TaskStatus.COMPLETED
-    artifact = ReportArtifact(
+    pdf_result = render_markdown_pdf(markdown, pdf_path, title=task.title)
+    completed_task = task.model_copy(update={"status": TaskStatus.COMPLETED})
+    markdown_artifact = ReportArtifact(
         task_id=task.task_id,
         format=ArtifactFormat.MARKDOWN,
         path=str(report_path),
-        metadata={"mock": True, "renderer": "render_report_markdown"},
+        metadata={"renderer": "render_report_markdown"},
     )
-    render_log = _log("render_outputs", "Rendered mock Markdown report artifact.", path=str(report_path))
+    pdf_artifact = ReportArtifact(
+        task_id=task.task_id,
+        format=ArtifactFormat.PDF,
+        path=str(pdf_result.path),
+        metadata={
+            "renderer": "reportlab_canvas",
+            "font_name": pdf_result.font_name,
+            "warnings": pdf_result.warnings,
+        },
+    )
+    artifacts = [markdown_artifact, pdf_artifact]
+    render_log = _log(
+        "render_outputs",
+        "Rendered Markdown and PDF report artifacts.",
+        report_path=str(report_path),
+        pdf_path=str(pdf_result.path),
+        pdf_font=pdf_result.font_name,
+        pdf_warnings=pdf_result.warnings,
+    )
     final_state = {
         **state,
-        "task": task,
+        "task": completed_task,
         "report_markdown": markdown,
-        "artifacts": [artifact],
+        "artifacts": artifacts,
         "current_step": "render_outputs",
         "node_logs": state.get("node_logs", []) + render_log,
     }
@@ -686,13 +611,14 @@ def render_outputs(state: WorkflowState) -> dict[str, Any]:
     )
 
     return {
-        "task": task,
+        "task": completed_task,
         "report_markdown": markdown,
-        "artifacts": [artifact],
+        "artifacts": artifacts,
         "current_step": "render_outputs",
         "intermediate": {
-            "artifact_count": 1,
+            "artifact_count": len(artifacts),
             "report_path": str(report_path),
+            "pdf_path": str(pdf_result.path),
             "sources_path": str(sources_path),
             "documents_path": str(documents_path),
             "evidence_path": str(evidence_path),
