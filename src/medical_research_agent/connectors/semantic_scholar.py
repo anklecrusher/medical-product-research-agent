@@ -7,7 +7,14 @@ from typing import Any
 
 import httpx
 
-from medical_research_agent.connectors.base import ConnectorError, SearchRequest, SourceConnector
+from medical_research_agent.connectors.base import (
+    ConnectorError,
+    ConnectorErrorKind,
+    SearchRequest,
+    SourceConnector,
+    connector_error_from_http_status,
+)
+from medical_research_agent.connectors.query_sanitizer import sanitized_api_query
 from medical_research_agent.schemas import SourceRecord, SourceType
 
 
@@ -29,7 +36,7 @@ class SemanticScholarConnector(SourceConnector):
 
     def search(self, request: SearchRequest) -> list[SourceRecord]:
         params = {
-            "query": request.query,
+            "query": sanitized_api_query(request),
             "limit": str(request.limit),
             "fields": "title,authors,year,venue,url,externalIds,publicationDate,abstract,citationCount",
         }
@@ -38,10 +45,12 @@ class SemanticScholarConnector(SourceConnector):
             response = self._client.get(self.search_url, params=params, headers=headers)
             response.raise_for_status()
             items = response.json().get("data", [])
+        except httpx.HTTPStatusError as exc:
+            raise connector_error_from_http_status(self.name, exc) from exc
         except httpx.HTTPError as exc:
             raise ConnectorError(self.name, f"network request failed: {exc}") from exc
         except ValueError as exc:
-            raise ConnectorError(self.name, f"invalid response: {exc}") from exc
+            raise ConnectorError(self.name, f"invalid response: {exc}", kind=ConnectorErrorKind.PARSER_BLOCKED_OR_WAF) from exc
 
         return [self._item_to_source(item, request) for item in items]
 

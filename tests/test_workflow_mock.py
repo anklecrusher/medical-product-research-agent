@@ -10,11 +10,12 @@ def test_mock_workflow_runs_to_markdown_artifact(tmp_path) -> None:
 
     assert state["task"].status == TaskStatus.COMPLETED
     assert state["current_step"] == "render_outputs"
-    assert len(state["sources"]) == 3
-    assert len(state["documents"]) == 3
-    assert len(state["evidence"]) == 3
+    assert len(state["sources"]) == len(state["research_plan"].search_items)
+    assert len(state["documents"]) == len(state["sources"])
+    assert len(state["evidence"]) == len(state["documents"])
     assert len(state["claims"]) == 2
-    assert len(state["node_logs"]) == 10
+    assert len(state["node_logs"]) == 11
+    assert all("facet" in source.metadata for source in state["sources"])
 
     artifact = state["artifacts"][0]
     assert artifact.format == ArtifactFormat.MARKDOWN
@@ -39,6 +40,7 @@ def test_mock_workflow_keeps_node_order(tmp_path) -> None:
         "fetch_and_parse_sources",
         "extract_evidence",
         "deduplicate_evidence",
+        "follow_up_evidence_gaps",
         "plan_report",
         "write_report",
         "verify_claims",

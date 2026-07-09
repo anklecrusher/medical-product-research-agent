@@ -7,7 +7,14 @@ from typing import Any
 
 import httpx
 
-from medical_research_agent.connectors.base import ConnectorError, SearchRequest, SourceConnector
+from medical_research_agent.connectors.base import (
+    ConnectorError,
+    ConnectorErrorKind,
+    SearchRequest,
+    SourceConnector,
+    connector_error_from_http_status,
+)
+from medical_research_agent.connectors.query_sanitizer import product_codes_from_request, sanitized_api_query
 from medical_research_agent.schemas import SourceRecord, SourceType
 
 
@@ -22,7 +29,7 @@ class OpenFDA510kConnector(SourceConnector):
 
     def search(self, request: SearchRequest) -> list[SourceRecord]:
         params = {
-            "search": _openfda_search_query(request.query),
+            "search": _openfda_search_query(request),
             "limit": str(request.limit),
         }
         try:
@@ -32,11 +39,11 @@ class OpenFDA510kConnector(SourceConnector):
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 return []
-            raise ConnectorError(self.name, f"network request failed: {exc}") from exc
+            raise connector_error_from_http_status(self.name, exc) from exc
         except httpx.HTTPError as exc:
             raise ConnectorError(self.name, f"network request failed: {exc}") from exc
         except ValueError as exc:
-            raise ConnectorError(self.name, f"invalid response: {exc}") from exc
+            raise ConnectorError(self.name, f"invalid response: {exc}", kind=ConnectorErrorKind.PARSER_BLOCKED_OR_WAF) from exc
 
         return [self._record_to_source(item, request) for item in results]
 
@@ -74,10 +81,15 @@ class OpenFDA510kConnector(SourceConnector):
         )
 
 
-def _openfda_search_query(query: str) -> str:
-    cleaned = query.replace('"', " ").strip()
-    terms = " ".join(part for part in cleaned.split()[:8])
-    return f'device_name:"{terms}"+applicant:"{terms}"+product_code:"{terms}"'
+def _openfda_search_query(request: SearchRequest) -> str:
+    terms = _escape_openfda_value(sanitized_api_query(request, max_terms=4))
+    query_parts = [f'device_name:"{terms}"', f'applicant:"{terms}"']
+    query_parts.extend(f'product_code:"{code}"' for code in product_codes_from_request(request))
+    return "+".join(query_parts)
+
+
+def _escape_openfda_value(value: str) -> str:
+    return value.replace('"', " ").strip()
 
 
 def _parse_fda_date(value: str | None) -> datetime | None:

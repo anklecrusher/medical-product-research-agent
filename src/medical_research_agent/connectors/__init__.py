@@ -1,6 +1,6 @@
 """Public source connectors."""
 
-from medical_research_agent.connectors.base import ConnectorError, SearchRequest, SourceConnector
+from medical_research_agent.connectors.base import ConnectorError, ConnectorErrorKind, SearchRequest, SourceConnector
 from medical_research_agent.connectors.clinical_trials import ClinicalTrialsConnector
 from medical_research_agent.connectors.crossref import CrossrefConnector
 from medical_research_agent.connectors.openfda import OpenFDA510kConnector
@@ -12,6 +12,7 @@ from medical_research_agent.connectors.web_search import DuckDuckGoHTMLSearchCon
 __all__ = [
     "ClinicalTrialsConnector",
     "ConnectorError",
+    "ConnectorErrorKind",
     "CrossrefConnector",
     "DuckDuckGoHTMLSearchConnector",
     "OpenFDA510kConnector",

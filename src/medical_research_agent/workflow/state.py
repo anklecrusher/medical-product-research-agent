@@ -9,6 +9,7 @@ from typing import Annotated, Any, TypedDict
 
 from pydantic import BaseModel, Field
 
+from medical_research_agent.research_planning import QueryExpansionPlan, ResearchFacetKind
 from medical_research_agent.schemas import (
     Claim,
     EvidenceItem,
@@ -47,6 +48,7 @@ class ResearchIntent(BaseModel):
 
     title: str
     original_query: str
+    query_expansion: QueryExpansionPlan
     focus_terms: list[str] = Field(default_factory=list)
     target_source_types: list[SourceType] = Field(default_factory=list)
     language: str = "zh-CN"
@@ -58,13 +60,19 @@ class SearchPlanItem(BaseModel):
     query: str
     source_type: SourceType
     rationale: str
+    facet: ResearchFacetKind | None = None
+    expanded_terms: list[str] = Field(default_factory=list)
+    preferred_connectors: list[str] = Field(default_factory=list)
+    route_priority: int = Field(default=50, ge=0)
     limit: int = Field(default=3, ge=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ResearchPlan(BaseModel):
     """High-level research plan produced before retrieval."""
 
     objective: str
+    query_expansion: QueryExpansionPlan
     search_items: list[SearchPlanItem] = Field(default_factory=list)
     expected_evidence: list[str] = Field(default_factory=list)
 
@@ -80,6 +88,7 @@ class WorkflowState(TypedDict, total=False):
     intent: ResearchIntent
     research_plan: ResearchPlan
     sources: list[SourceRecord]
+    rejected_sources: list[SourceRecord]
     documents: list[ParsedDocument]
     evidence: list[EvidenceItem]
     product_specs: list[ProductSpec]

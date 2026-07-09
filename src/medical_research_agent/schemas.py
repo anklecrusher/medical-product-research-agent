@@ -31,6 +31,7 @@ class TaskStatus(StrEnum):
     PLANNED = "planned"
     RUNNING = "running"
     COMPLETED = "completed"
+    NEEDS_MORE_SOURCES = "needs_more_sources"
     FAILED = "failed"
     NEEDS_REVIEW = "needs_review"
 

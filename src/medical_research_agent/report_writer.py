@@ -5,7 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from medical_research_agent.report_models import ReportIndexes, ReportInputs
+from medical_research_agent.report_outline import ReportSectionKind, section_kind_from_section
 from medical_research_agent.report_sections import parameter_section, review_section, source_boundary_section
+from medical_research_agent.report_semantic_sections import (
+    executive_summary_section,
+    literature_section,
+    missing_ui_manual_section,
+    product_programming_section,
+    regulatory_section,
+    terminology_method_section,
+    ui_interface_section,
+    vendor_comparison_section,
+)
 from medical_research_agent.schemas import (
     Claim,
     ClaimStatus,
@@ -40,6 +51,44 @@ def _indexes(inputs: ReportInputs) -> ReportIndexes:
 
 
 def _draft_section(
+    section: ReportSection,
+    inputs: ReportInputs,
+    indexes: ReportIndexes,
+    claims: list[Claim],
+) -> ReportSection:
+    kind = section_kind_from_section(section)
+    if kind is not None:
+        return _draft_section_with_content(section, _content_for_kind(kind, inputs, indexes), claims)
+    return _draft_legacy_section(section, inputs, indexes, claims)
+
+
+def _content_for_kind(kind: ReportSectionKind, inputs: ReportInputs, indexes: ReportIndexes) -> str:
+    match kind:
+        case ReportSectionKind.EXECUTIVE_SUMMARY:
+            return executive_summary_section(inputs)
+        case ReportSectionKind.TERMINOLOGY_METHOD:
+            return terminology_method_section(inputs)
+        case ReportSectionKind.PRODUCT_PROGRAMMING:
+            return product_programming_section(inputs, indexes)
+        case ReportSectionKind.UI_INTERFACE:
+            return ui_interface_section(inputs, indexes)
+        case ReportSectionKind.MISSING_UI_MANUAL:
+            return missing_ui_manual_section(inputs)
+        case ReportSectionKind.PARAMETERS:
+            return parameter_section(inputs, indexes)
+        case ReportSectionKind.VENDOR_COMPARISON:
+            return vendor_comparison_section(inputs, indexes)
+        case ReportSectionKind.LITERATURE_EVIDENCE:
+            return literature_section(inputs, indexes)
+        case ReportSectionKind.REGULATORY_EVIDENCE:
+            return regulatory_section(inputs, indexes)
+        case ReportSectionKind.GAPS_RISKS:
+            return review_section(inputs, indexes)
+        case unreachable:
+            assert_never(unreachable)
+
+
+def _draft_legacy_section(
     section: ReportSection,
     inputs: ReportInputs,
     indexes: ReportIndexes,

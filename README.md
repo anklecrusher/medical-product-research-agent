@@ -104,12 +104,29 @@ The command prints task counts plus direct artifact paths. The run writes:
 
 - `sources.json`
 - `documents.json`
+- `rejected_sources.json`
 - `evidence.json`
 - `claims.json`
 - `report.md`
 - `report.pdf`
 - `workflow_state.json`
 - `run.log`
+
+### Mature Research Workflow Semantics
+
+The source workflow now adds a research-quality control layer before report rendering:
+
+- Query planning extracts research facets from the user request, keeps the original Chinese query, and expands medical-product terms into bounded Chinese/English search variants for literature, vendor/manual, UI/programming, regulatory, and local/private-document routes.
+- Source routing chooses connectors by facet instead of relying on one generic search path. For UI, programmer, manual, and engineering-logic topics, public web/vendor-manual style searches are prioritized before literature-only fallback.
+- The relevance gate scores candidate sources before parsing. Accepted sources are written to `sources.json`; rejected or pending-review records are written to `rejected_sources.json` with audit reasons instead of being silently discarded.
+- The evidence gap loop detects missing required facets after the first pass and can run bounded follow-up searches tied to specific gaps. It does not run an unbounded crawler.
+- Completion status separates pipeline execution from research success. Artifact generation can finish while the task status is `needs_more_sources` or `needs_review` when source coverage, supported claims, or connector results are insufficient. `completed` is reserved for runs that satisfy the configured research-quality thresholds.
+
+Known current limitations:
+
+- Live public search quality depends on external services and rate limits; recoverable 403/429 connector errors are logged in `workflow_state.json` and `run.log`.
+- Deterministic extraction is intentionally conservative and may mark claims as `needs_review` when accepted sources do not directly support product/UI conclusions.
+- Regulatory and vendor/manual coverage is useful for diagnostics but still needs broader source-specific connectors before it should be treated as exhaustive.
 
 ## Local Private File Ingestion
 

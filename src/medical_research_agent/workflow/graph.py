@@ -8,6 +8,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from medical_research_agent.schemas import ResearchTask
+from medical_research_agent.workflow import follow_up
 from medical_research_agent.workflow import nodes
 from medical_research_agent.workflow.state import WorkflowState
 
@@ -19,6 +20,7 @@ WORKFLOW_NODE_ORDER = [
     "fetch_and_parse_sources",
     "extract_evidence",
     "deduplicate_evidence",
+    "follow_up_evidence_gaps",
     "plan_report",
     "write_report",
     "verify_claims",
@@ -36,6 +38,7 @@ def build_workflow_graph() -> Any:
     graph.add_node("fetch_and_parse_sources", nodes.fetch_and_parse_sources)
     graph.add_node("extract_evidence", nodes.extract_evidence)
     graph.add_node("deduplicate_evidence", nodes.deduplicate_evidence)
+    graph.add_node("follow_up_evidence_gaps", follow_up.follow_up_evidence_gaps)
     graph.add_node("plan_report", nodes.plan_report)
     graph.add_node("write_report", nodes.write_report)
     graph.add_node("verify_claims", nodes.verify_claims)
@@ -55,6 +58,7 @@ def create_initial_state(query: str, *, output_dir: str | Path | None = None) ->
     return {
         "task": task,
         "sources": [],
+        "rejected_sources": [],
         "documents": [],
         "evidence": [],
         "product_specs": [],

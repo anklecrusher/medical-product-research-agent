@@ -7,7 +7,14 @@ from typing import Any
 
 import httpx
 
-from medical_research_agent.connectors.base import ConnectorError, SearchRequest, SourceConnector
+from medical_research_agent.connectors.base import (
+    ConnectorError,
+    ConnectorErrorKind,
+    SearchRequest,
+    SourceConnector,
+    connector_error_from_http_status,
+)
+from medical_research_agent.connectors.query_sanitizer import sanitized_api_query
 from medical_research_agent.schemas import SourceRecord, SourceType
 
 
@@ -22,7 +29,7 @@ class ClinicalTrialsConnector(SourceConnector):
 
     def search(self, request: SearchRequest) -> list[SourceRecord]:
         params = {
-            "query.term": request.query,
+            "query.term": sanitized_api_query(request),
             "pageSize": str(request.limit),
             "format": "json",
         }
@@ -30,10 +37,12 @@ class ClinicalTrialsConnector(SourceConnector):
             response = self._client.get(self.endpoint, params=params)
             response.raise_for_status()
             studies = response.json().get("studies", [])
+        except httpx.HTTPStatusError as exc:
+            raise connector_error_from_http_status(self.name, exc) from exc
         except httpx.HTTPError as exc:
             raise ConnectorError(self.name, f"network request failed: {exc}") from exc
         except ValueError as exc:
-            raise ConnectorError(self.name, f"invalid response: {exc}") from exc
+            raise ConnectorError(self.name, f"invalid response: {exc}", kind=ConnectorErrorKind.PARSER_BLOCKED_OR_WAF) from exc
 
         return [self._study_to_source(study, request) for study in studies]
 

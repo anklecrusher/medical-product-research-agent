@@ -8,7 +8,12 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from medical_research_agent.connectors.base import ConnectorError, SearchRequest, SourceConnector
+from medical_research_agent.connectors.base import (
+    ConnectorError,
+    SearchRequest,
+    SourceConnector,
+    connector_error_from_http_status,
+)
 from medical_research_agent.schemas import DocumentFormat, SourceRecord, SourceType
 
 
@@ -32,6 +37,8 @@ class DuckDuckGoHTMLSearchConnector(SourceConnector):
         try:
             response = self._client.get(self.search_url, params={"q": request.query})
             response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise connector_error_from_http_status(self.name, exc) from exc
         except httpx.HTTPError as exc:
             raise ConnectorError(self.name, f"network request failed: {exc}") from exc
 

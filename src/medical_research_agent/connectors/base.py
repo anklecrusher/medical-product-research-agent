@@ -4,21 +4,45 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from enum import StrEnum
+from typing import Any, Final
+
+import httpx
 
 from medical_research_agent.schemas import SourceRecord
+
+
+class ConnectorErrorKind(StrEnum):
+    """Connector failure classes that workflow state can audit."""
+
+    RETRYABLE = "retryable"
+    BLOCKED = "blocked"
+    BAD_QUERY = "bad_query"
+    NO_RESULTS = "no_results"
+    PARSER_BLOCKED_OR_WAF = "parser_blocked_or_waf"
 
 
 class ConnectorError(RuntimeError):
     """Raised when a source connector cannot complete a request cleanly."""
 
-    def __init__(self, connector_name: str, message: str) -> None:
+    def __init__(
+        self,
+        connector_name: str,
+        message: str,
+        *,
+        kind: ConnectorErrorKind = ConnectorErrorKind.RETRYABLE,
+    ) -> None:
         super().__init__(f"{connector_name}: {message}")
         self.connector_name = connector_name
         self.message = message
+        self.kind = kind
 
 
-@dataclass(frozen=True)
+class SearchRequestError(ValueError):
+    """Raised when connector search input is structurally invalid."""
+
+
+@dataclass(frozen=True, slots=True)
 class SearchRequest:
     """Normalized connector search input."""
 
@@ -29,9 +53,9 @@ class SearchRequest:
 
     def __post_init__(self) -> None:
         if not self.query.strip():
-            raise ValueError("SearchRequest.query must not be empty.")
+            raise SearchRequestError("SearchRequest.query must not be empty.")
         if self.limit < 1:
-            raise ValueError("SearchRequest.limit must be at least 1.")
+            raise SearchRequestError("SearchRequest.limit must be at least 1.")
 
 
 class SourceConnector(ABC):
@@ -42,3 +66,40 @@ class SourceConnector(ABC):
     @abstractmethod
     def search(self, request: SearchRequest) -> list[SourceRecord]:
         """Search a public source and return normalized source records."""
+
+
+_ERROR_BODY_LIMIT: Final = 160
+
+
+def connector_error_from_http_status(connector_name: str, exc: httpx.HTTPStatusError) -> ConnectorError:
+    """Classify non-success HTTP responses without treating them as progress."""
+
+    response = exc.response
+    status_code = response.status_code
+    match status_code:  # noqa: MATCH_OK - HTTP status codes are an open integer set.
+        case 400:
+            kind = ConnectorErrorKind.BAD_QUERY
+        case 403:
+            kind = ConnectorErrorKind.BLOCKED
+        case 429:
+            kind = ConnectorErrorKind.RETRYABLE
+        case 404:
+            kind = ConnectorErrorKind.NO_RESULTS
+        case 401 | 407 | 451:
+            kind = ConnectorErrorKind.BLOCKED
+        case status if 500 <= status <= 599:
+            kind = ConnectorErrorKind.RETRYABLE
+        case _:
+            kind = ConnectorErrorKind.RETRYABLE
+    return ConnectorError(
+        connector_name,
+        f"HTTP {status_code}: {_clean_error_body(response.text)}",
+        kind=kind,
+    )
+
+
+def _clean_error_body(raw_text: str) -> str:
+    cleaned = " ".join(raw_text.split())
+    if not cleaned:
+        return "empty response body"
+    return cleaned[:_ERROR_BODY_LIMIT]

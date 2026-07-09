@@ -747,3 +747,161 @@
 - `src/medical_research_agent/workflow/nodes.py` 仍偏大，后续可在不改变行为的前提下拆分节点实现；本次 F1 修正按要求未编辑产品代码。
 - 后续可继续增强真实网页/PDF 表格抽取、页码定位、厂商/监管 connector 精度、NMPA/NICE/FDA PMA/recall/EUDAMED 等数据源。
 - 如未来接入真实 LLM 章节写作，必须继续保留私有资料默认本地处理和可审计外发门禁。
+
+## 2026-07-08 / Todo 10 research-quality regression fixtures
+
+修改文件：
+
+- `tests/test_research_quality_regressions.py`
+- `src/medical_research_agent/workflow/report_nodes.py`
+- `.omo/plans/mature-research-agent-architecture.md`
+- `.omo/evidence/task-10-mature-research-agent-architecture.md`
+- `LOG.md`
+
+改动摘要：
+
+- 新增 Todo 10 no-network research-quality 回归测试，覆盖 UI/manual happy path、UI/manual missing gap、regulatory weak/no-result、vendor competitor/spec，以及 `run_source_workflow(..., output_dir=tmp_path)` integration-style artifact flow。
+- 回归断言不只检查 JSON/PDF 存在，还检查 accepted/rejected sources、facet coverage、supported/needs_review claims、status semantics 和 report wording。
+- noisy Crossref 数学/laser-plasma 来源必须进入 `rejected_sources`，不得进入 accepted evidence 或报告正文。
+- 修正 `render_outputs()`：写入 `workflow_state.json` 的 final state 现在保留 render 节点返回的 artifact path metadata，包括 `rejected_sources_path`。
+
+测试与检查：
+
+- Red receipt：新增回归初跑出现 `KeyError: 'rejected_sources_path'`，确认 serialized workflow state 缺少 render artifact path metadata。
+- `.\.venv\Scripts\python.exe -m pytest tests/test_research_quality_regressions.py -q` 通过：`5 passed, 1 warning`。
+- `.\.venv\Scripts\python.exe -m pytest tests/test_research_quality_regressions.py tests/test_source_relevance.py tests/test_report_outline_planner.py -q` 通过：`9 passed, 1 warning`。
+- `.\.venv\Scripts\python.exe -m pytest -q` 通过：`88 passed, 1 warning`；warning 仍为已知 LangGraph pending deprecation。
+- Manual QA 使用 `.omo\tmp\task10_manual_pytest` 临时目录检查 no-network integration artifacts：accepted=5、rejected=8、evidence=10、status=completed、supported_claims=2；报告包含 `程控 UI / 界面资料` 和 `论文证据不在本节充当产品界面证据`，不包含 noisy Crossref 关键词。检查后已删除临时目录。
+
+后续事项：
+
+- `tests/test_research_quality_regressions.py` 当前正好 250 pure LOC；后续若继续增加场景，应先拆出 fixture/helper 模块。
+- Todo 11 可继续执行 live smoke、README/LOG 架构说明补充和运行产物清理。
+
+## 2026-07-08 / Todo 11 mature research architecture live smoke and docs
+
+修改文件：
+
+- `README.md`
+- `LOG.md`
+- `.omo/evidence/task-11-mature-research-agent-architecture.md`
+
+改动摘要：
+
+- 运行完整测试和原始 UI/程控题目的 live CLI smoke，确认 source workflow 会落盘 `sources.json`、`rejected_sources.json`、`evidence.json`、`claims.json`、`report.md`、`report.pdf`、`workflow_state.json` 和 `run.log`。
+- README 补充 mature research workflow 语义：query planning、facet-based source routing、relevance gate、bounded evidence gap loop、以及 `completed` / `needs_more_sources` / `needs_review` 的完成状态边界。
+- 记录 live smoke 当前真实结果：pipeline 产物生成成功，但研究状态为 `needs_review`，原因是 live source coverage 仍偏向公开论文，Semantic Scholar 429 与 ClinicalTrials 403 被作为 recoverable/classified errors 记录。
+- 使用既有 all-rejected regression 测试覆盖 no-useful-sources failure scenario，确认无有效来源时会写出 rejection evidence 并使用 `needs_more_sources`，而不是伪装成普通成功。
+- live smoke 运行目录仅用于审计，证据摘要写入 `.omo/evidence/` 后已删除 `outputs/task11_live_smoke/`。
+
+测试与检查：
+
+- `.\.venv\Scripts\python.exe -m pytest -q` 通过：`88 passed, 1 warning`；warning 仍为已知 LangGraph pending deprecation。
+- `.\.venv\Scripts\python.exe examples\run_source_workflow.py "调研交叉刺激与8触点刺激的相关程控逻辑和ui界面" --output-dir outputs\task11_live_smoke` 通过，exit code 0；artifact audit 显示 accepted sources=6、rejected sources=2、documents=6、evidence=6、claims=2、errors=4、task status=`needs_review`、PDF header=`%PDF-`。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_source_relevance.py::test_all_rejected_sources_record_needs_more_sources_and_render_json -q` 通过：`1 passed, 1 warning`。
+- 使用完整 git 路径检查 runtime 输出：live smoke 目录在清理前只出现在 ignored `outputs/` 下，清理后 `outputs\task11_live_smoke` 不存在。
+
+后续事项：
+
+- Live public-web/vendor/manual evidence coverage 仍不稳定，后续应继续增强 vendor manual、IFU、programmer manual、patent 和监管 connector，而不是把公开论文结果当作 UI/程控产品证据。
+- Semantic Scholar 429 和 ClinicalTrials 403 已被分类记录，但后续可增加 API key 配置、限速/backoff 或替代源，提高 live smoke 的可重复性。
+
+## 2026-07-08 / F2 source quality low-relevance blocker fix
+
+修改文件：
+
+- `src/medical_research_agent/source_quality.py`
+- `tests/test_source_relevance.py`
+- `tests/test_workflow_sources.py`
+- `.omo/evidence/f2-source-quality-fix-mature-research-agent-architecture.md`
+- `LOG.md`
+
+改动摘要：
+
+- 修复 source quality gate：非 generic、非 mock 来源只要低于既有 `REJECTION_THRESHOLD` 就会被拒绝，不再要求同时命中 hard-coded noise bucket。
+- 新增 failing-first regression，覆盖 `vendor_public_doc` / `programmer_ui` 形态但内容完全无医疗/程控相关性的来源，要求 rejected、`relevance=0.0`、reason 为 `low_relevance`。
+- 更新旧 workflow source fake connector 的标题/snippet，使其包含真实 DBS/electrode/manual/regulatory 相关文本，避免旧 fixture 依赖零相关占位标题通过 relevance gate。
+
+关键决定：
+
+- 最小修复放在共享 seam `_decision_for_source()`，不新增黑名单词，也不硬编码 reviewer 的 banana-bread 示例。
+- 保留 generic plan 和 mock source 的既有兼容行为，避免破坏离线 mock workflow。
+
+测试与检查：
+
+- Red test：`.\.venv\Scripts\python.exe -m pytest tests\test_source_relevance.py::test_zero_relevance_vendor_programmer_ui_source_is_rejected -q` 先失败，失败点为 unrelated source 被 accepted。
+- Targeted：`.\.venv\Scripts\python.exe -m pytest tests\test_source_relevance.py -q` 通过：`3 passed, 1 warning`。
+- Broader subset：`.\.venv\Scripts\python.exe -m pytest tests\test_research_quality_regressions.py tests\test_source_relevance.py tests\test_report_outline_planner.py -q` 通过：`10 passed, 1 warning`。
+- Full suite：`.\.venv\Scripts\python.exe -m pytest -q` 通过：`89 passed, 1 warning`。
+- Manual QA：generic unrelated `vendor_public_doc` + `programmer_ui` probe 返回 `accepted=0`、`rejected=1`、`status=needs_more_sources`、`decision=rejected`、`relevance=0.0`。
+
+后续事项：
+
+- `src/medical_research_agent/source_quality.py` 当前 230 pure LOC，处于 warning band；后续若继续扩展 source quality 规则，应先拆分职责。
+- 相关证据记录在 `.omo/evidence/f2-source-quality-fix-mature-research-agent-architecture.md`。
+
+## 2026-07-08 / F2 source quality short-token collision fix
+
+修改文件：
+
+- `src/medical_research_agent/source_quality.py`
+- `tests/test_source_relevance.py`
+- `.omo/evidence/f2-source-quality-short-token-fix-mature-research-agent-architecture.md`
+- `LOG.md`
+
+改动摘要：
+
+- 修复 source relevance 的短英文 token 子串误命中：`UI` 不再能命中 `guide` 这类无关英文长词内部。
+- 最小改动放在共享 `_matched_terms()` seam：ASCII term 使用词/token 边界匹配；中文等非 ASCII term 保留原有 substring 匹配语义。
+- 新增 regression 同时覆盖无关 `guide` collision 被拒绝，以及真实 standalone DBS / programmer UI / interleaving stimulation / 8-contact 来源继续被接受。
+
+测试与检查：
+
+- Red test：`.\.venv\Scripts\python.exe -m pytest tests\test_source_relevance.py::test_short_ui_token_does_not_match_inside_unrelated_words -q` 先失败，失败点为 `Warehouse shelving permit guide` 被纳入 `review.accepted`。
+- Targeted regression：同一测试通过，`1 passed, 1 warning`。
+- Targeted relevance：`.\.venv\Scripts\python.exe -m pytest tests\test_source_relevance.py -q` 通过，`4 passed, 1 warning`。
+- Broader source workflow：`.\.venv\Scripts\python.exe -m pytest tests\test_workflow_sources.py::test_source_workflow_uses_real_connectors_and_parsers -q` 通过，`1 passed, 1 warning`。
+- Full suite：`.\.venv\Scripts\python.exe -m pytest -q` 通过，`90 passed, 1 warning`。
+- No-excuse：touched Python files 通过，`no violations in 2 file(s)`。
+- Adversarial probe：结构化断言确认 unrelated guide source rejected，legitimate DBS programmer UI source accepted。
+
+后续事项：
+
+- `src/medical_research_agent/source_quality.py` 当前 238 pure LOC，仍在 warning band；后续继续扩展 source quality 规则前应优先拆分职责。
+- 相关证据记录在 `.omo/evidence/f2-source-quality-short-token-fix-mature-research-agent-architecture.md`。
+
+## 2026-07-09 / Pre-commit review cleanup for mature research architecture
+
+修改文件：
+
+- `src/medical_research_agent/workflow/source_nodes.py`
+- `src/medical_research_agent/workflow/nodes.py`
+- `src/medical_research_agent/connectors/base.py`
+- `tests/test_connector_error_handling.py`
+- `tests/test_workflow_sources.py`
+- `tests/test_evidence_gap_followup.py`
+- `tests/test_research_quality_regressions.py`
+- `tests/test_source_relevance.py`
+- `LOG.md`
+
+改动摘要：
+
+- 将真实 source connector routing 和 URL/PDF parser 调用从 `workflow/nodes.py` 拆到 `workflow/source_nodes.py`，保留 `nodes.py` 作为 workflow 入口与 mock/evidence 节点聚合，避免单文件继续超过 OMO no-excuse 体积线。
+- `SearchRequest` 改为 frozen+slots dataclass，并新增 `SearchRequestError` 表达 query/limit 结构错误；HTTP status classifier 保留开放整数集合的显式 `MATCH_OK` 例外。
+- 更新测试 monkeypatch seam 到 `workflow.source_nodes`，避免测试继续依赖旧的大型 `workflow.nodes` 内部实现位置。
+- 修复 pre-commit code review 发现的两个阻塞点：`parse failed` 等可恢复 parser 错误不再因宽泛 `failed` marker 被归类为 `TaskStatus.FAILED`；query planning 的短 ASCII trigger（如 `UI`）改为词/token 边界匹配，避免 `guide/guideline` 误触发 `programmer_ui`。
+- 本机清理：`.omo/` 作为 OMO 过程/证据目录加入 `.git/info/exclude`，不进入 feature commit；已删除旧的 ignored runtime smoke 目录 `outputs/cross_8contact_stim_ui_visible`。
+
+测试与检查：
+
+- `.\.venv\Scripts\python.exe -m pytest tests\test_workflow_status.py tests\test_research_planning.py tests\test_query_expansion.py -q` 通过：`22 passed, 1 warning`。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_connector_error_handling.py tests\test_workflow_sources.py tests\test_workflow_mock.py -q` 通过：`10 passed, 1 warning`。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_evidence_gap_followup.py tests\test_research_quality_regressions.py tests\test_source_relevance.py -q` 通过：`13 passed, 1 warning`。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_source_relevance.py tests\test_evidence_gap_followup.py tests\test_research_quality_regressions.py tests\test_workflow_sources.py tests\test_connector_error_handling.py -q` 通过：`21 passed, 1 warning`。
+- `.\.venv\Scripts\python.exe -m pytest -q` 通过：`92 passed, 1 warning`；warning 仍为已知 LangGraph pending deprecation。
+- OMO no-excuse 对当前 changed Python files 通过：`no violations in 37 file(s)`。
+
+后续事项：
+
+- `.omo/` 仍保留本地审查与计划证据，但默认不提交；若需要公开过程证据，应单独做 process-artifact commit。
+- `outputs/` 保持 ignored runtime 根目录；旧可视 smoke 已删除，后续如需给用户保留运行产物，应明确说明只作本地检查用途。
