@@ -8,6 +8,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from medical_research_agent.schemas import DocumentFormat, ParsedDocument, SourceRecord
+from medical_research_agent.url_security import PublicURLFetcherOwner, request_public_url
 
 
 class DocumentParseError(RuntimeError):
@@ -19,19 +20,19 @@ class DocumentParseError(RuntimeError):
         self.message = message
 
 
-class WebPageParser:
+class WebPageParser(PublicURLFetcherOwner):
     """Minimal parser for public HTML pages."""
 
     name = "web_page_parser"
 
-    def __init__(self, *, client: httpx.Client | None = None, timeout_seconds: float = 20.0) -> None:
-        self._client = client or httpx.Client(timeout=timeout_seconds, follow_redirects=True)
+    def __init__(self, *, transport: httpx.MockTransport | None = None, timeout_seconds: float = 20.0) -> None:
+        super().__init__(transport=transport, timeout_seconds=timeout_seconds)
 
     def parse_url(self, source: SourceRecord) -> ParsedDocument:
         if source.url is None:
             raise DocumentParseError(self.name, "source has no URL.")
         try:
-            response = self._client.get(str(source.url))
+            response = request_public_url(self._fetcher, "GET", str(source.url))
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise DocumentParseError(self.name, f"fetch failed: {exc}") from exc

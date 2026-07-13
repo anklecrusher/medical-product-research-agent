@@ -10,6 +10,7 @@ from typing import Any, Final
 import httpx
 
 from medical_research_agent.schemas import SourceRecord
+from medical_research_agent.http_client import HTTPClientOwner
 
 
 class ConnectorErrorKind(StrEnum):
@@ -58,7 +59,7 @@ class SearchRequest:
             raise SearchRequestError("SearchRequest.limit must be at least 1.")
 
 
-class SourceConnector(ABC):
+class SourceConnector(HTTPClientOwner, ABC):
     """A source discovery adapter that returns schema-aligned records."""
 
     name: str
@@ -66,6 +67,33 @@ class SourceConnector(ABC):
     @abstractmethod
     def search(self, request: SearchRequest) -> list[SourceRecord]:
         """Search a public source and return normalized source records."""
+
+
+def json_object_response(response: httpx.Response, connector_name: str) -> dict[str, Any]:
+    """Parse a connector response whose JSON root must be an object."""
+
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ConnectorError(
+            connector_name,
+            "invalid response: JSON root must be an object",
+            kind=ConnectorErrorKind.PARSER_BLOCKED_OR_WAF,
+        )
+    return payload
+
+
+def object_value(value: Any) -> dict[str, Any]:
+    """Normalize an untrusted nested JSON value to an object."""
+
+    return value if isinstance(value, dict) else {}
+
+
+def object_items(value: Any) -> list[dict[str, Any]]:
+    """Keep only object entries from an untrusted JSON collection."""
+
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
 
 
 _ERROR_BODY_LIMIT: Final = 160

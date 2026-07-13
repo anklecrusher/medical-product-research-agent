@@ -25,7 +25,7 @@ class ClinicalTrialsConnector(SourceConnector):
     endpoint = "https://clinicaltrials.gov/api/v2/studies"
 
     def __init__(self, *, client: httpx.Client | None = None, timeout_seconds: float = 20.0) -> None:
-        self._client = client or httpx.Client(timeout=timeout_seconds, follow_redirects=True)
+        super().__init__(client=client, timeout_seconds=timeout_seconds)
 
     def search(self, request: SearchRequest) -> list[SourceRecord]:
         params = {

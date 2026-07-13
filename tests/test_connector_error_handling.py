@@ -121,10 +121,7 @@ def test_chinese_topic_smoke_records_classified_connector_errors(monkeypatch, tm
             raise ConnectorError(self.name, "HTTP 403: forbidden", kind=ConnectorErrorKind.BLOCKED)
 
     class RetryableConnector:
-        name = "semantic_scholar"
-
-        def __init__(self, api_key: str | None = None) -> None:
-            self.api_key = api_key
+        name = "crossref"
 
         def search(self, request: SearchRequest) -> list[SourceRecord]:
             raise ConnectorError(self.name, "HTTP 429: rate limit", kind=ConnectorErrorKind.RETRYABLE)
@@ -139,7 +136,7 @@ def test_chinese_topic_smoke_records_classified_connector_errors(monkeypatch, tm
             raise ConnectorError(self.name, "HTTP 403: forbidden", kind=ConnectorErrorKind.BLOCKED)
 
     monkeypatch.setattr(source_nodes, "PubMedConnector", BadQueryConnector)
-    monkeypatch.setattr(source_nodes, "CrossrefConnector", BlockedConnector)
+    monkeypatch.setattr(source_nodes, "CrossrefConnector", RetryableConnector)
     monkeypatch.setattr(source_nodes, "SemanticScholarConnector", RetryableConnector)
     monkeypatch.setattr(source_nodes, "DuckDuckGoHTMLSearchConnector", WebBlockedConnector)
     monkeypatch.setattr(source_nodes, "OpenFDA510kConnector", BadQueryConnector)

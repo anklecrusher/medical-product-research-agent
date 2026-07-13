@@ -31,7 +31,7 @@ class SemanticScholarConnector(SourceConnector):
         api_key: str | None = None,
         timeout_seconds: float = 20.0,
     ) -> None:
-        self._client = client or httpx.Client(timeout=timeout_seconds, follow_redirects=True)
+        super().__init__(client=client, timeout_seconds=timeout_seconds)
         self.api_key = api_key
 
     def search(self, request: SearchRequest) -> list[SourceRecord]:

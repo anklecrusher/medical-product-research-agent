@@ -3,7 +3,8 @@ from __future__ import annotations
 from medical_research_agent.connectors import ConnectorError
 from medical_research_agent.parsers import DocumentParseError
 from medical_research_agent.schemas import DocumentFormat, ParsedDocument, SourceRecord, SourceType
-from medical_research_agent.workflow import source_nodes
+from medical_research_agent.source_contracts import AccessCheck, FreeAccessStatus
+from medical_research_agent.workflow import follow_up, source_nodes
 from medical_research_agent.workflow.graph import create_initial_state, run_source_workflow
 
 
@@ -102,6 +103,32 @@ class FakeClinicalTrialsConnector:
         ]
 
 
+class FakeAccessGUDIDConnector:
+    name = "accessgudid"
+
+    def search(self, request):
+        return [
+            SourceRecord(
+                task_id=request.task_id,
+                source_type=SourceType.PUBLIC_REGULATORY,
+                title="AccessGUDID DBS electrode stimulation source",
+                url="https://example.com/accessgudid",
+                search_query=request.query,
+                metadata={"connector": self.name, "snippet": "DBS electrode stimulation device identifier"},
+            )
+        ]
+
+
+class FakeAccessVerifier:
+    def verify(self, source):
+        return AccessCheck(
+            source_id=source.source_id,
+            url=str(source.url),
+            status=FreeAccessStatus.FREE_LANDING_PAGE,
+            checked_by="test",
+        )
+
+
 class FakeWebPageParser:
     name = "fake_web"
 
@@ -139,6 +166,9 @@ def test_source_workflow_uses_real_connectors_and_parsers(monkeypatch, tmp_path)
     monkeypatch.setattr(source_nodes, "DuckDuckGoHTMLSearchConnector", FakeVendorSearchConnector)
     monkeypatch.setattr(source_nodes, "OpenFDA510kConnector", FakeOpenFDAConnector)
     monkeypatch.setattr(source_nodes, "ClinicalTrialsConnector", FakeClinicalTrialsConnector)
+    monkeypatch.setattr(source_nodes, "AccessGUDIDConnector", FakeAccessGUDIDConnector)
+    monkeypatch.setattr(source_nodes, "SourceAccessVerifier", FakeAccessVerifier)
+    monkeypatch.setattr(follow_up, "SourceAccessVerifier", FakeAccessVerifier)
     monkeypatch.setattr(source_nodes, "WebPageParser", FakeWebPageParser)
     monkeypatch.setattr(source_nodes, "PDFParser", FakePDFParser)
 
@@ -146,19 +176,17 @@ def test_source_workflow_uses_real_connectors_and_parsers(monkeypatch, tmp_path)
 
     assert state["use_real_connectors"] is True
     assert state["current_step"] == "render_outputs"
-    assert len(state["sources"]) == 11
-    assert len(state["documents"]) == 8
-    assert any("crossref: offline" in error for error in state["errors"])
-    assert all("facet=" in error for error in state["errors"] if "crossref: offline" in error)
-    assert any("parse failed" in error for error in state["errors"])
-    assert state["intermediate"]["source_error_count"] == 3
-    assert state["intermediate"]["parse_error_count"] == 3
+    assert len(state["sources"]) == 12
+    assert len(state["documents"]) == 12
+    assert state["intermediate"]["source_error_count"] == 1
+    assert state["intermediate"]["parse_error_count"] == 0
     assert state["intermediate"]["skipped_source_count"] == 0
     assert state["intermediate"]["connector_counts"]["openfda_510k"] == 1
-    assert state["intermediate"]["connector_counts"]["clinicaltrials_gov"] == 1
-    assert state["intermediate"]["connector_counts"]["duckduckgo_html"] == 3
-    assert state["intermediate"]["connector_counts"]["pubmed"] == 3
-    assert state["intermediate"]["connector_counts"]["semantic_scholar"] == 3
+    assert state["intermediate"]["connector_counts"]["accessgudid"] == 1
+    assert state["intermediate"]["connector_counts"]["duckduckgo_html"] == 5
+    assert state["intermediate"]["connector_counts"]["pubmed"] == 5
+    assert state["intermediate"]["connector_counts"]["crossref"] == 0
+    assert state["intermediate"]["source_access_check_count"] == len(state["sources"])
     assert all("facet" in source.metadata for source in state["sources"])
     assert (tmp_path / "sources.json").exists()
     assert (tmp_path / "documents.json").exists()

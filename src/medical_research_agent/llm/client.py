@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -11,6 +13,38 @@ import httpx
 from medical_research_agent.config import AppSettings, get_settings
 from medical_research_agent.llm.models import LLMRequest, LLMResponse, LLMUsage
 from medical_research_agent.llm.privacy import assert_external_llm_allowed
+
+
+@dataclass(frozen=True, slots=True)
+class MissingLLMAPIKeyError(ValueError):
+    """Raised when an OpenAI-compatible provider has no configured API key."""
+
+    env_var: str = "MEDICAL_RESEARCH_LLM_API_KEY"
+    provider: str = "openai_compatible"
+
+    def __str__(self) -> str:
+        return f"Missing LLM API key. Set {self.env_var} in .env for {self.provider} provider."
+
+
+@dataclass(frozen=True, slots=True)
+class LLMRequestFailedError(RuntimeError):
+    """Raised after retryable LLM transport or response parsing failures."""
+
+    attempts: int
+    reason: str
+
+    def __str__(self) -> str:
+        return f"LLM request failed after {self.attempts} attempt(s): {self.reason}"
+
+
+@dataclass(frozen=True, slots=True)
+class UnsupportedLLMProviderError(ValueError):
+    """Raised when configuration names an unsupported LLM provider."""
+
+    provider: str
+
+    def __str__(self) -> str:
+        return f"Unsupported LLM provider: {self.provider}"
 
 
 class LLMClient(ABC):
@@ -52,18 +86,24 @@ class OpenAICompatibleLLMClient(LLMClient):
 
     provider = "openai_compatible"
 
-    def __init__(self, settings: AppSettings | None = None) -> None:
+    def __init__(
+        self,
+        settings: AppSettings | None = None,
+        *,
+        transport: httpx.BaseTransport | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self.settings = settings or get_settings()
         self.base_url = self.settings.llm_base_url.rstrip("/")
         self.model = self.settings.llm_model
+        self.transport = transport
+        self.sleep = sleep
 
     def complete(self, request: LLMRequest) -> LLMResponse:
         assert_external_llm_allowed(request.source_types, self.settings)
         api_key = self.settings.llm_api_key_value()
         if not api_key:
-            raise ValueError(
-                "Missing LLM API key. Set MEDICAL_RESEARCH_LLM_API_KEY in .env for openai_compatible provider."
-            )
+            raise MissingLLMAPIKeyError()
 
         payload: dict[str, Any] = {
             "model": request.model or self.model,
@@ -86,18 +126,24 @@ class OpenAICompatibleLLMClient(LLMClient):
         attempts = self.settings.llm_max_retries + 1
         for attempt in range(attempts):
             try:
-                with httpx.Client(timeout=self.settings.llm_timeout_seconds) as client:
+                with httpx.Client(timeout=self.settings.llm_timeout_seconds, transport=self.transport) as client:
                     response = client.post(f"{self.base_url}/chat/completions", json=payload, headers=headers)
                     response.raise_for_status()
                     data = response.json()
-                    return _parse_openai_compatible_response(data, provider=self.provider, fallback_model=payload["model"])
+                    parsed = _parse_openai_compatible_response(
+                        data,
+                        provider=self.provider,
+                        fallback_model=payload["model"],
+                    )
+                    parsed.metadata["attempts"] = attempt + 1
+                    return parsed
             except (httpx.HTTPError, ValueError, KeyError, IndexError) as exc:
                 last_error = exc
                 if attempt >= attempts - 1:
                     break
-                time.sleep(min(2**attempt, 8))
+                self.sleep(min(2**attempt, 8))
 
-        raise RuntimeError(f"LLM request failed after {attempts} attempt(s): {last_error}") from last_error
+        raise LLMRequestFailedError(attempts=attempts, reason=str(last_error)) from last_error
 
 
 def _parse_openai_compatible_response(data: dict[str, Any], *, provider: str, fallback_model: str) -> LLMResponse:
@@ -131,4 +177,4 @@ def get_llm_client(settings: AppSettings | None = None) -> LLMClient:
         return MockLLMClient(model=resolved.llm_model)
     if resolved.llm_provider == "openai_compatible":
         return OpenAICompatibleLLMClient(settings=resolved)
-    raise ValueError(f"Unsupported LLM provider: {resolved.llm_provider}")
+    raise UnsupportedLLMProviderError(provider=resolved.llm_provider)

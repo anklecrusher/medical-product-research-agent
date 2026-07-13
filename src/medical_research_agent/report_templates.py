@@ -7,6 +7,7 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
+from medical_research_agent.report_models import SourceAuditItem
 from medical_research_agent.schemas import FigureAsset
 
 
@@ -53,6 +54,7 @@ def render_report_markdown(
     report: Any,
     *,
     figures: list[FigureAsset] | None = None,
+    source_audit: list[SourceAuditItem] | None = None,
     template_name: str = DEFAULT_REPORT_TEMPLATE,
 ) -> str:
     """Render a Markdown report from a flexible report object."""
@@ -65,5 +67,9 @@ def render_report_markdown(
         figures_by_section.setdefault(key, []).append(figure)
 
     template = _environment().get_template(template_name)
-    return template.render(report=report, figures_by_section=figures_by_section)
+    return template.render(
+        report=report,
+        figures_by_section=figures_by_section,
+        source_audit=source_audit or [],
+    )
 

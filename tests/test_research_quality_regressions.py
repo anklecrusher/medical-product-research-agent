@@ -6,6 +6,7 @@ from pathlib import Path
 from medical_research_agent.connectors import ConnectorError
 from medical_research_agent.research_planning import ResearchFacetKind
 from medical_research_agent.schemas import ClaimStatus, DocumentFormat, ParsedDocument, SourceRecord, SourceType, TaskStatus
+from medical_research_agent.source_contracts import AccessCheck, FreeAccessStatus
 from medical_research_agent.workflow import follow_up, source_nodes
 from medical_research_agent.workflow.graph import run_source_workflow
 
@@ -78,8 +79,7 @@ class VendorManualConnector:
                 publisher="Fixture Vendor",
                 search_query=request.query,
                 metadata={
-                    "connector": self.name,
-                    "snippet": "clinician programmer manual interface UI 8-contact lead stimulation frequency",
+                    "connector": self.name, "snippet": "clinician programmer manual interface UI 8-contact lead stimulation frequency",
                 },
             )
         ]
@@ -101,8 +101,7 @@ class VendorSpecConnector:
                 publisher="Fixture Vendor",
                 search_query=request.query,
                 metadata={
-                    "connector": self.name,
-                    "snippet": "vendor manual DBS electrode contacts stimulation frequency pulse width amplitude",
+                    "connector": self.name, "snippet": "vendor manual DBS electrode contacts stimulation frequency pulse width amplitude",
                 },
             )
         ]
@@ -136,6 +135,14 @@ class QualityPDFParser:
         return _document_for_source(source, self.name, DocumentFormat.PDF)
 
 
+class FreeAccessVerifier:
+    def verify(self, source: SourceRecord) -> AccessCheck:
+        return AccessCheck(
+            source_id=source.source_id, url=str(source.url) if source.url is not None else None,
+            status=FreeAccessStatus.FREE_LANDING_PAGE, checked_by="test",
+        )
+
+
 def _document_for_source(source: SourceRecord, parser_name: str, document_format: DocumentFormat) -> ParsedDocument:
     title = source.title.casefold()
     if "competitor" in title or "specification" in title:
@@ -156,9 +163,7 @@ def _document_for_source(source: SourceRecord, parser_name: str, document_format
             "clinician programmer screenshots, UI workflow, vendor manual tables, or product interface claims."
         )
     return ParsedDocument(
-        task_id=source.task_id,
-        source_id=source.source_id,
-        format=document_format,
+        task_id=source.task_id, source_id=source.source_id, format=document_format,
         title=source.title,
         text=text,
         parser_name=parser_name,
@@ -170,6 +175,8 @@ def _patch_common_parsers(monkeypatch) -> None:
     monkeypatch.setattr(source_nodes, "PDFParser", QualityPDFParser)
     monkeypatch.setattr(follow_up, "WebPageParser", QualityWebParser)
     monkeypatch.setattr(follow_up, "PDFParser", QualityPDFParser)
+    monkeypatch.setattr(source_nodes, "SourceAccessVerifier", FreeAccessVerifier)
+    monkeypatch.setattr(follow_up, "SourceAccessVerifier", FreeAccessVerifier)
 
 
 def _patch_connectors(monkeypatch, *, pubmed, crossref, vendor, openfda=EmptyConnector, clinical=EmptyConnector) -> None:
@@ -208,8 +215,10 @@ def test_ui_manual_happy_path_accepts_manual_rejects_noisy_literature_and_report
     assert any(claim.status == ClaimStatus.SUPPORTED for claim in state["claims"])
     assert "程控 UI / 界面资料" in report_text
     assert "论文证据不在本节充当产品界面证据" in report_text
-    assert "常微分方程" not in report_text
-    assert "laser induced plasma" not in report_text
+    report_body, audit = report_text.split("## 来源审计与证据缺口", maxsplit=1)
+    assert all(title not in report_body for title in NOISY_CROSSREF_TITLES)
+    assert all(title in audit for title in NOISY_CROSSREF_TITLES)
+    assert "quality_review_rejected" in audit
 
 
 def test_ui_manual_missing_path_keeps_literature_only_as_needs_review_gap(monkeypatch, tmp_path: Path) -> None:
@@ -240,12 +249,8 @@ def test_ui_manual_missing_path_keeps_literature_only_as_needs_review_gap(monkey
 def test_regulatory_weak_path_records_diagnostic_status_and_artifacts(monkeypatch, tmp_path: Path) -> None:
     # Given: regulatory connectors fail or return no accepted evidence.
     _patch_connectors(
-        monkeypatch,
-        pubmed=EmptyConnector,
-        crossref=EmptyConnector,
-        vendor=EmptyConnector,
-        openfda=RegulatoryFailingConnector,
-        clinical=RegulatoryEmptyConnector,
+        monkeypatch, pubmed=EmptyConnector, crossref=EmptyConnector, vendor=EmptyConnector,
+        openfda=RegulatoryFailingConnector, clinical=RegulatoryEmptyConnector,
     )
     _patch_common_parsers(monkeypatch)
 
@@ -318,5 +323,7 @@ def test_no_network_integration_flow_writes_quality_artifacts_and_blocks_noisy_c
     assert workflow_state["intermediate"]["rejected_sources_path"] == str(tmp_path / "rejected_sources.json")
     assert any(claim["status"] == ClaimStatus.SUPPORTED for claim in workflow_state["claims"])
     assert "程控 UI / 界面资料" in report_text
-    assert "常微分方程" not in report_text
-    assert "laser induced plasma" not in report_text
+    report_body, audit = report_text.split("## 来源审计与证据缺口", maxsplit=1)
+    assert all(title not in report_body for title in NOISY_CROSSREF_TITLES)
+    assert all(title in audit for title in NOISY_CROSSREF_TITLES)
+    assert "quality_review_rejected" in audit

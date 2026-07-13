@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import httpx
 import pytest
 
@@ -50,25 +52,40 @@ def test_pubmed_connector_returns_source_records() -> None:
     assert records[0].metadata["doi"] == "10.1000/example"
 
 
-def test_crossref_connector_returns_source_records() -> None:
+@pytest.mark.parametrize(
+    ("date_fields", "expected_published_at"),
+    [
+        ({"issued": {"date-parts": [[2023, 8]]}}, datetime(2023, 8, 1, tzinfo=timezone.utc)),
+        ({"issued": {"date-parts": [[None]]}}, None),
+        (
+            {
+                "published-print": {"date-parts": [[None]]},
+                "issued": {"date-parts": [[2023, 8]]},
+            },
+            datetime(2023, 8, 1, tzinfo=timezone.utc),
+        ),
+        ({"published-print": "not-a-date-object", "issued": {"date-parts": [[2023, 8]]}}, datetime(2023, 8, 1, tzinfo=timezone.utc)),
+        ({"issued": "not-a-date-object"}, None),
+    ],
+    ids=("valid_issued_date", "nested_null_date", "invalid_preferred_date_falls_back", "scalar_preferred_date_falls_back", "scalar_only_date"),
+)
+def test_crossref_connector_normalizes_publication_date_candidates(
+    date_fields,
+    expected_published_at: datetime | None,
+) -> None:
+    item = {
+        "title": ["Spinal cord stimulation parameters"],
+        "DOI": "10.1000/scs",
+        "URL": "https://doi.org/10.1000/scs",
+        "publisher": "Example Publisher",
+        "container-title": ["Neuromodulation"],
+        "author": [{"given": "Grace", "family": "Hopper"}],
+        **date_fields,
+    }
     transport = httpx.MockTransport(
         lambda request: httpx.Response(
             200,
-            json={
-                "message": {
-                    "items": [
-                        {
-                            "title": ["Spinal cord stimulation parameters"],
-                            "DOI": "10.1000/scs",
-                            "URL": "https://doi.org/10.1000/scs",
-                            "publisher": "Example Publisher",
-                            "container-title": ["Neuromodulation"],
-                            "issued": {"date-parts": [[2023, 8]]},
-                            "author": [{"given": "Grace", "family": "Hopper"}],
-                        }
-                    ]
-                }
-            },
+            json={"message": {"items": [item]}},
         )
     )
 
@@ -80,6 +97,7 @@ def test_crossref_connector_returns_source_records() -> None:
     assert records[0].title == "Spinal cord stimulation parameters"
     assert records[0].authors == ["Grace Hopper"]
     assert records[0].metadata["doi"] == "10.1000/scs"
+    assert records[0].published_at == expected_published_at
 
 
 def test_semantic_scholar_connector_supports_optional_key() -> None:

@@ -59,3 +59,17 @@
 - 暂无参考来源。
 {% endif %}
 
+## 来源审计与证据缺口
+
+{% if source_audit -%}
+- 以下来源仍保存在 JSON 产物中，但未达到最终引用资格或仍待核查。
+
+| 来源ID | 标题 | 来源类型 | 访问状态 | 未纳入最终参考文献的原因 |
+|---|---|---|---|---|
+{% for item in source_audit -%}
+| {{ item.source_id }} | {{ item.title }} | {{ item.source_type }} | {{ item.access_status }} | {{ item.reason }} |
+{% endfor %}
+{% else -%}
+- 当前没有因访问资格被排除或待核查的来源。
+{% endif %}
+

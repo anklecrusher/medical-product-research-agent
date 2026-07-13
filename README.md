@@ -73,15 +73,22 @@ The run writes mock intermediate artifacts under `outputs/{task_id}/` by default
 
 The first real source layer provides normalized `SourceRecord` output for:
 
-- PubMed / NCBI E-utilities
-- Crossref
-- Semantic Scholar, with optional `MEDICAL_RESEARCH_SEMANTIC_SCHOLAR_API_KEY`
+- PubMed / NCBI E-utilities for literature discovery and abstract-level access, not full text
+- PubMed Central (`PMCFullTextConnector`) for item-level open full text
+- Europe PMC for open full-text items when available; records without a usable free item URL remain metadata-only
+- OpenAlex for literature discovery and item-level open-access URLs when available; otherwise metadata-only
+- Crossref for DOI discovery and metadata only
+- Semantic Scholar discovery, with optional `MEDICAL_RESEARCH_SEMANTIC_SCHOLAR_API_KEY`
 - Vendor/public document web search via DuckDuckGo HTML results
 - FDA 510(k) metadata via openFDA
+- FDA/NLM AccessGUDID public device-identifier metadata
 - ClinicalTrials.gov study registry metadata
+- PatentsView public patent metadata
 - User supplied public URLs
 
 The parser layer provides normalized `ParsedDocument` output for public HTML pages and PDF URLs/files. Network failures are wrapped in `ConnectorError` or `DocumentParseError` so callers can show clear source-specific errors without crashing silently.
+
+User-supplied public URLs are subject to an outbound safety policy. The initial host and every redirect target must resolve exclusively to public IP addresses; loopback, private, link-local, reserved, unspecified, and multicast addresses are rejected. Production requests pin a validated public IP at the actual connection boundary to close DNS-rebinding gaps. Explicit or environment-configured HTTP proxies are unsupported for these fetches and fail closed because the application cannot verify a proxy's remote DNS result.
 
 Run a lightweight search and optional URL parse:
 
@@ -100,7 +107,7 @@ The LangGraph workflow can also run the CLI-first source workflow: real source r
 .\.venv\Scripts\python.exe examples\run_source_workflow.py "调研 DBS 电极阻抗的论文证据" --output-dir outputs\source_workflow_demo
 ```
 
-The command prints task counts plus direct artifact paths. The run writes:
+The command prints task counts, status, report-quality pass/score/reasons, and direct artifact paths. The run writes:
 
 - `sources.json`
 - `documents.json`
@@ -147,6 +154,20 @@ Legacy binary `.doc` files are intentionally not parsed yet; use `.docx` for the
 
 The LLM layer is replaceable and defaults to a local mock client. Tests and mock workflow runs do not require an API key or network access.
 
+Check the active configuration without printing secrets:
+
+```powershell
+.\.venv\Scripts\python.exe examples\check_llm_config.py
+```
+
+Run the no-key CI smoke for the OpenAI-compatible client path:
+
+```powershell
+.\.venv\Scripts\python.exe examples\check_llm_config.py --mock-provider-smoke
+```
+
+The doctor reports provider, model, base URL, and whether a key is present as `api_key_set=true/false`. It never prints the key value. In `openai_compatible` mode, a missing key exits nonzero with the setup hint for `MEDICAL_RESEARCH_LLM_API_KEY`. The mock-provider smoke uses an in-memory fake `/chat/completions` provider, so it validates the payload, retry/error path, privacy gate, and provider switching without requiring a real key.
+
 To use an OpenAI-compatible third-party API, copy `.env.example` to `.env` and fill:
 
 ```powershell
@@ -164,3 +185,10 @@ MEDICAL_RESEARCH_ALLOW_EXTERNAL_LLM_FOR_PRIVATE_SOURCES=false
 ```
 
 Keep private-source external calls disabled unless the user has explicitly approved that behavior.
+
+### Provider, Citation, And Runtime Boundaries
+
+- The mock-provider smoke proves the local OpenAI-compatible client path only. It does not call or validate a real provider. A real-provider smoke remains conditional on an explicitly configured `.env` key, and diagnostics must continue to redact it.
+- `completed` requires a passing report-quality snapshot. `needs_more_sources` and `needs_review` can still generate a Markdown report and PDF, but their quality reasons, `workflow_state.json`, and `rejected_sources.json` must be reviewed before treating the result as research-ready.
+- Final report references require an item-level `CitationEligibility` record with a free-accessible URL. Crossref/DOI metadata-only records remain in the source audit and cannot become final citations without a separately verified accessible item.
+- `outputs/` is local runtime state. Use a dedicated `--output-dir` for inspection, then remove it unless the user explicitly requests the artifacts be retained. Do not commit `.env`, runtime outputs, caches, uploads, or private documents.

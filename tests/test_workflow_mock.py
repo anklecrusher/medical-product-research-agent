@@ -8,7 +8,9 @@ def test_mock_workflow_runs_to_markdown_artifact(tmp_path) -> None:
         output_dir=tmp_path,
     )
 
-    assert state["task"].status == TaskStatus.COMPLETED
+    assert state["task"].status == TaskStatus.NEEDS_REVIEW
+    assert state["intermediate"]["report_quality"]["passed"] is False
+    assert state["intermediate"]["report_quality"]["reasons"]
     assert state["current_step"] == "render_outputs"
     assert len(state["sources"]) == len(state["research_plan"].search_items)
     assert len(state["documents"]) == len(state["sources"])

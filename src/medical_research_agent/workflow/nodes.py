@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
-from medical_research_agent.evidence import extract_evidence_from_documents
+from medical_research_agent.config import get_settings
 from medical_research_agent.evidence_dedup import deduplicate_evidence_items
+from medical_research_agent.llm.client import UnsupportedLLMProviderError, get_llm_client
 from medical_research_agent.research_planning import build_query_expansion_plan
 from medical_research_agent.schemas import (
     DocumentFormat,
     ParsedDocument,
     SourceRecord,
     TaskStatus,
+)
+from medical_research_agent.source_strategy import (
+    llm_strategy_failure_reason,
+    plan_source_strategy,
+    search_items_from_source_strategy,
 )
 from medical_research_agent.source_quality import review_source_quality
 from medical_research_agent.workflow.state import (
@@ -25,6 +32,7 @@ from medical_research_agent.workflow.query_expansion import (
     focus_terms_from_expansion,
     source_types_from_expansion,
 )
+from medical_research_agent.workflow.evidence_nodes import extract_evidence_node
 from medical_research_agent.workflow.report_nodes import plan_report, render_outputs, verify_claims, write_report
 from medical_research_agent.workflow.source_nodes import fetch_and_parse_sources_real, search_sources_real
 
@@ -76,19 +84,35 @@ def plan_research(state: WorkflowState) -> dict[str, Any]:
     intent = state["intent"]
     query_expansion = intent.query_expansion
     search_items = build_search_items_from_expansion(query_expansion)
+    try:
+        llm_client = get_llm_client(get_settings())
+    except UnsupportedLLMProviderError as exc:
+        fallback_plan = plan_source_strategy(intent)
+        strategy_plan = replace(
+            fallback_plan,
+            audit_reasons=(*fallback_plan.audit_reasons, llm_strategy_failure_reason(exc)),
+        )
+    else:
+        strategy_plan = plan_source_strategy(intent, llm_client=llm_client)
+    strategy_items = search_items_from_source_strategy(strategy_plan.strategy)
     plan = ResearchPlan(
         objective=f"围绕“{intent.original_query}”形成可追溯的医疗产品调研草稿。",
         query_expansion=query_expansion,
-        search_items=search_items,
+        search_items=strategy_items or search_items,
         expected_evidence=["产品参数", "论文证据", "厂商资料", "监管线索", "风险与未确认项"],
     )
 
     return {
         "research_plan": plan,
+        "source_strategy": strategy_plan.strategy,
         "current_step": "plan_research",
         "intermediate": {
             "query_expansion": query_expansion.model_dump(mode="json"),
             "research_plan": plan.model_dump(mode="json"),
+            "source_strategy": strategy_plan.strategy.model_dump(mode="json"),
+            "source_strategy_audit": list(strategy_plan.audit_reasons),
+            "source_strategy_follow_up_intents": list(strategy_plan.follow_up_intents),
+            "source_strategy_external_llm_used": strategy_plan.external_llm_used,
         },
         "node_logs": _log("plan_research", "Created mock research plan.", search_items=len(search_items)),
     }
@@ -195,30 +219,9 @@ def _fetch_and_parse_sources_mock(state: WorkflowState) -> dict[str, Any]:
 
 
 def extract_evidence(state: WorkflowState) -> dict[str, Any]:
-    """Extract deterministic structured evidence from parsed documents."""
+    """Extract deterministic evidence and configured public-source LLM augmentation."""
 
-    task = state["task"]
-    extracted = extract_evidence_from_documents(
-        task.task_id,
-        state.get("sources", []),
-        state.get("documents", []),
-    )
-
-    return {
-        "evidence": extracted.evidence,
-        "product_specs": extracted.product_specs,
-        "current_step": "extract_evidence",
-        "intermediate": {
-            "evidence_count": len(extracted.evidence),
-            "product_spec_count": len(extracted.product_specs),
-        },
-        "node_logs": _log(
-            "extract_evidence",
-            "Extracted deterministic structured evidence.",
-            evidence_count=len(extracted.evidence),
-            product_spec_count=len(extracted.product_specs),
-        ),
-    }
+    return extract_evidence_node(state)
 
 
 def deduplicate_evidence(state: WorkflowState) -> dict[str, Any]:

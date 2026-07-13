@@ -8,15 +8,16 @@ import httpx
 
 from medical_research_agent.connectors.base import ConnectorError
 from medical_research_agent.schemas import DocumentFormat, SourceRecord, SourceType
+from medical_research_agent.url_security import PublicURLFetcherOwner, request_public_url, validate_public_http_url
 
 
-class URLSourceConnector:
+class URLSourceConnector(PublicURLFetcherOwner):
     """Create and lightly validate public URL source records."""
 
     name = "url"
 
-    def __init__(self, *, client: httpx.Client | None = None, timeout_seconds: float = 20.0) -> None:
-        self._client = client or httpx.Client(timeout=timeout_seconds, follow_redirects=True)
+    def __init__(self, *, transport: httpx.MockTransport | None = None, timeout_seconds: float = 20.0) -> None:
+        super().__init__(transport=transport, timeout_seconds=timeout_seconds)
 
     def from_url(
         self,
@@ -27,8 +28,10 @@ class URLSourceConnector:
         source_type: SourceType = SourceType.PUBLIC_WEB,
     ) -> SourceRecord:
         parsed = urlparse(url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ConnectorError(self.name, f"unsupported URL: {url}")
+        try:
+            validate_public_http_url(url)
+        except httpx.HTTPError as exc:
+            raise ConnectorError(self.name, str(exc)) from exc
 
         metadata = {
             "connector": self.name,
@@ -50,7 +53,7 @@ class URLSourceConnector:
         if source.url is None:
             raise ConnectorError(self.name, "cannot fetch metadata for a source without url.")
         try:
-            response = self._client.head(str(source.url), follow_redirects=True)
+            response = request_public_url(self._fetcher, "HEAD", str(source.url))
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise ConnectorError(self.name, f"URL metadata request failed: {exc}") from exc

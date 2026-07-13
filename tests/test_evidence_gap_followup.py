@@ -21,6 +21,7 @@ from medical_research_agent.schemas import (
     SourceType,
     TaskStatus,
 )
+from medical_research_agent.source_contracts import AccessCheck, FreeAccessStatus
 from medical_research_agent.workflow import follow_up
 from medical_research_agent.workflow import source_nodes
 from medical_research_agent.workflow.graph import run_source_workflow
@@ -126,6 +127,16 @@ class FailingPDFParser:
         raise DocumentParseError(self.name, "blocked pdf parser")
 
 
+class FreeAccessVerifier:
+    def verify(self, source: SourceRecord) -> AccessCheck:
+        return AccessCheck(
+            source_id=source.source_id,
+            url=str(source.url) if source.url is not None else None,
+            status=FreeAccessStatus.FREE_LANDING_PAGE,
+            checked_by="test",
+        )
+
+
 def _plan(query: str) -> ResearchPlan:
     expansion = build_query_expansion_plan(query)
     return ResearchPlan(
@@ -134,6 +145,11 @@ def _plan(query: str) -> ResearchPlan:
         search_items=build_search_items_from_expansion(expansion),
         expected_evidence=[],
     )
+
+
+def _patch_access_verifiers(monkeypatch) -> None:
+    monkeypatch.setattr(source_nodes, "SourceAccessVerifier", FreeAccessVerifier)
+    monkeypatch.setattr(follow_up, "SourceAccessVerifier", FreeAccessVerifier)
 
 
 def test_gap_planner_targets_missing_programmer_manual_facets() -> None:
@@ -180,6 +196,7 @@ def test_source_workflow_records_follow_up_when_vendor_manual_supplies_gap(monke
     monkeypatch.setattr(follow_up, "DuckDuckGoHTMLSearchConnector", FollowUpVendorConnector)
     monkeypatch.setattr(follow_up, "WebPageParser", FakeWebPageParser)
     monkeypatch.setattr(follow_up, "PDFParser", FakePDFParser)
+    _patch_access_verifiers(monkeypatch)
 
     state = run_source_workflow("调研 DBS 程控界面和论文证据", output_dir=tmp_path)
 
@@ -215,6 +232,7 @@ def test_source_workflow_keeps_missing_gap_when_follow_up_finds_nothing(monkeypa
     monkeypatch.setattr(follow_up, "DuckDuckGoHTMLSearchConnector", EmptyVendorConnector)
     monkeypatch.setattr(follow_up, "WebPageParser", FakeWebPageParser)
     monkeypatch.setattr(follow_up, "PDFParser", FakePDFParser)
+    _patch_access_verifiers(monkeypatch)
 
     state = run_source_workflow("调研 DBS 程控界面和论文证据", output_dir=tmp_path)
     report_markdown = (tmp_path / "report.md").read_text(encoding="utf-8")
@@ -251,6 +269,7 @@ def test_source_workflow_keeps_gap_when_follow_up_source_parse_fails(monkeypatch
     monkeypatch.setattr(follow_up, "DuckDuckGoHTMLSearchConnector", FollowUpVendorConnector)
     monkeypatch.setattr(follow_up, "WebPageParser", FakeWebPageParser)
     monkeypatch.setattr(follow_up, "PDFParser", FailingPDFParser)
+    _patch_access_verifiers(monkeypatch)
 
     state = run_source_workflow("调研 DBS 程控界面和论文证据", output_dir=tmp_path)
     report_markdown = (tmp_path / "report.md").read_text(encoding="utf-8")

@@ -905,3 +905,692 @@
 
 - `.omo/` 仍保留本地审查与计划证据，但默认不提交；若需要公开过程证据，应单独做 process-artifact commit。
 - `outputs/` 保持 ignored runtime 根目录；旧可视 smoke 已删除，后续如需给用户保留运行产物，应明确说明只作本地检查用途。
+
+## 2026-07-09 / Todo 1 deep-free-source LLM configuration doctor
+
+修改文件：
+
+- `examples/check_llm_config.py`
+- `src/medical_research_agent/llm/client.py`
+- `src/medical_research_agent/llm/doctor.py`
+- `tests/test_check_llm_config_cli.py`
+- `tests/test_llm_config_doctor.py`
+- `README.md`
+- `LOG.md`
+
+改动摘要：
+
+- 新增 `examples/check_llm_config.py`，输出 provider/model/base URL/key-present 状态，并保持 API key 只显示为 `api_key_set=true/false`。
+- 新增 LLM doctor 模块，支持默认 mock 配置检查、`openai_compatible` 缺 key 非零退出、以及 `--mock-provider-smoke` 的 in-memory OpenAI-compatible `/chat/completions` 测试。
+- smoke 通过 fake HTTP transport 走真实 OpenAI-compatible client payload、retry/error、privacy gate 和 provider switching 路径，不需要真实 API key 或外部网络。
+- `OpenAICompatibleLLMClient` 增加可注入 HTTP transport 和 sleep hook，用于无网络测试；同时将既有通用异常收敛为 typed exception dataclass，保留原有用户可读错误文本。
+- README 补充 LLM doctor 用法、mock smoke 语义、缺 key 行为和 secret redaction 边界。
+
+测试与检查：
+
+- Red receipt：`.\.venv\Scripts\python.exe -m pytest tests\test_llm_config_doctor.py -q` 先失败，原因是 `medical_research_agent.llm.doctor` 尚不存在。
+- Focused：`.\.venv\Scripts\python.exe -m pytest tests\test_llm_client.py tests\test_llm_config_doctor.py tests\test_check_llm_config_cli.py -q` 通过：`14 passed`。
+- Manual QA：`.\.venv\Scripts\python.exe examples\check_llm_config.py --mock-provider-smoke` 通过，exit code 0，输出 `provider=mock`、`api_key_set=false`、`mock_provider_smoke=ok`、`retry_attempts=1`。
+- Manual failure QA：设置 `MEDICAL_RESEARCH_LLM_PROVIDER=openai_compatible` 且不设置 key 后运行 doctor，exit code 1，输出 `api_key_set=false`，stderr 为 `Missing LLM API key...`，未打印 secret。
+- OMO no-excuse 对本次 touched Python files 通过：`no violations in 5 file(s)`。
+
+后续事项：
+
+- 本轮仅实现配置 doctor 和 mocked provider smoke；真实 provider smoke 仍应在 `.env` 配置真实 key 后由后续 Todo 13 明确标记并执行。
+- LLM 规划、筛源、证据抽取和报告写作仍未接入真实 LLM，本条只完成可执行配置验证入口。
+
+## 2026-07-09 / Todo 3 deep-free-source item-level access verifier
+
+修改文件：
+
+- `src/medical_research_agent/source_access.py`
+- `src/medical_research_agent/source_contracts.py`
+- `tests/test_free_access_verifier.py`
+- `.omo/evidence/task-3-deep-free-source-llm-reporting.md`
+- `LOG.md`
+
+改动摘要：
+
+- 新增 item-level `SourceAccessVerifier`，通过 HTTP `HEAD` 和 `GET` fallback 检查具体 URL 的状态码、content type、redirect final URL、PDF/HTML parseability 和 failure reason。
+- 覆盖 PubMed abstract、PMC/Europe PMC full text、公开厂商 PDF/manual page、302 redirect、403、404、login marker、paywall marker、DOI metadata-only、parser failure、missing URL/unsupported scheme 和 prompt-injection marker 场景。
+- 适配 Todo 2 新增的 `source_contracts.py`：`source_access.py` 不再定义私有 `FreeAccessStatus`/`AccessCheck`，而是返回共享 `AccessCheck`，并通过 `CitationEligibility.from_access_check(...)` 判定最终引用资格。
+- 只为共享 `AccessCheck` 补充 verifier 必需的 `status_code`、`redirected`、`failure_reason` 字段，未改动来源 schema 或报告模板。
+
+测试与检查：
+
+- Red test：`.\.venv\Scripts\python.exe -m pytest tests\test_free_access_verifier.py -q` 先失败，原因是 `medical_research_agent.source_access` 尚不存在。
+- Focused：`.\.venv\Scripts\python.exe -m pytest tests\test_free_access_contracts.py tests\test_free_access_verifier.py -q` 通过：`19 passed in 14.50s`。
+- Broader parser/source subset：`.\.venv\Scripts\python.exe -m pytest tests\test_parsers_documents.py tests\test_connectors_sources.py tests\test_free_access_verifier.py -q` 通过：`28 passed in 32.36s`。
+- Full suite：`.\.venv\Scripts\python.exe -m pytest -q` 通过：`121 passed, 1 warning in 58.19s`；warning 仍为既有 LangGraph pending deprecation。
+- Manual QA：使用 `httpx.MockTransport` 的 fake PDF 和 fake login page，输出 `Manual: status=pdf_accessible; eligible=True` 与 `Login: status=login_required; eligible=False`。
+- OMO no-excuse 对本次 touched Python files 通过：`no violations in 3 file(s)`。
+- Duplicate contract check 确认只有 `src/medical_research_agent/source_contracts.py` 定义 `FreeAccessStatus` 和 `AccessCheck`。
+
+后续事项：
+
+- DOI/Crossref 仍保持 metadata-only，后续 Todo 6/8 应只在发现并验证具体免费全文 URL 后再提升为可最终引用。
+- 当前 verifier 对未知 content type 保守返回 `needs_review`；后续新增 connector 时可按具体公开来源类型扩展分类规则。
+
+## 2026-07-09 / Todo 2 deep-free-source source strategy and free-access contracts
+
+修改文件：
+
+- `src/medical_research_agent/source_contracts.py`
+- `tests/test_free_access_contracts.py`
+- `LOG.md`
+
+改动摘要：
+
+- 新增冻结 Pydantic 契约模型：`SourceStrategy`、`SourceRoute`、`AccessCheck`、`CitationEligibility`、`LLMResearchDecision`、`ReportQualityMetric`、`ReportQualityMetrics`。
+- 新增 `FreeAccessStatus` 枚举和 `FINAL_CITABLE_ACCESS_STATUSES`，把 final citation eligibility 固化为 URL + 枚举状态的布尔契约，不依赖 prose 约定。
+- 新增 unit tests 覆盖 strategy/access/citation/quality metrics 序列化、free PDF/HTML 可最终引用、paywalled/metadata-only/missing URL 不可最终引用、非法 access status 在 Pydantic 边界被拒绝。
+
+关键决定：
+
+- 契约放在新的 `source_contracts.py`，避免继续扩大 `schemas.py` 或已处于 warning band 附近的 `source_quality.py`。
+- 本轮只定义 workflow 边界契约，不实现 HTTP 级 item access verifier；实际验证器留给 Todo 3。
+
+测试与检查：
+
+- Red receipt：`.\.venv\Scripts\python.exe -m pytest tests\test_free_access_contracts.py -q` 先失败，原因是 `medical_research_agent.source_contracts` 尚不存在。
+- Targeted：`.\.venv\Scripts\python.exe -m pytest tests\test_free_access_contracts.py -q` 通过：`4 passed`。
+- Broader subset：`.\.venv\Scripts\python.exe -m pytest tests\test_schemas_import.py tests\test_research_planning.py tests\test_source_relevance.py -q` 通过：`13 passed, 1 warning`。
+- Full suite：`.\.venv\Scripts\python.exe -m pytest -q` 通过：`121 passed, 1 warning`；warning 仍为已知 LangGraph pending deprecation。
+- Manual QA：Python one-liner 构造 `pdf_accessible` 与 `metadata_only` access checks，输出 PDF `eligible=true`、metadata-only `eligible=false`。
+- OMO no-excuse 对本轮 touched Python files 通过：`no violations in 2 file(s)`；pure LOC 为 `source_contracts.py=97`、`test_free_access_contracts.py=100`。
+
+后续事项：
+
+- Todo 3 应复用或对齐本轮 `FreeAccessStatus` / `AccessCheck` / `CitationEligibility`，避免另建平行 free-access 语义。
+
+## 2026-07-09 / Todo 4 deep-free-source report quality evaluator
+
+修改文件：
+
+- `src/medical_research_agent/report_quality.py`
+- `tests/test_report_quality_evaluator.py`
+- `.omo/evidence/task-4-deep-free-source-llm-reporting.md`
+- `LOG.md`
+
+改动摘要：
+
+- 新增 deterministic `evaluate_report_quality(...)`，按核心结论、Markdown 表格、来源类型多样性、supported claim、免费可引用链接、主题章节、未确认项表达、引用密度和 PDF 可读性评估报告质量。
+- 评估输入使用 typed `ReportQualityArtifacts`、`AccessCheck`、`Claim` 和可选 `SourceRecord`，复用 `CitationEligibility.from_access_check(...)`，没有新增平行 free-access 语义。
+- 新增 fixture tests 覆盖 weak/template-only 报告失败、长但无支持报告失败，以及设备参数调研和公司/监管动态两种不同研究形态通过，避免硬编码 DBS、疾病、公司或单一 benchmark。
+
+测试与检查：
+
+- Red receipt：`.\.venv\Scripts\python.exe -m pytest tests\test_report_quality_evaluator.py -q` 先失败，原因是 `medical_research_agent.report_quality` 尚不存在。
+- Focused：`.\.venv\Scripts\python.exe -m pytest tests\test_report_quality_evaluator.py -q` 通过：`4 passed`。
+- Broader subset：`.\.venv\Scripts\python.exe -m pytest tests\test_report_quality_evaluator.py tests\test_report_writer.py tests\test_report_templates.py tests\test_research_quality_regressions.py -q` 通过：`14 passed, 1 warning`。
+- Full suite：`.\.venv\Scripts\python.exe -m pytest -q` 通过：`125 passed, 1 warning`；warning 仍为既有 LangGraph pending deprecation。
+- Manual QA：Python stdin command 构造 weak/good fixture，输出 `weak: passed=False; score=0.00; ...` 与 `good: passed=True; score=1.00; reasons=[]`。
+- OMO no-excuse 对本次 touched Python files 通过：`no violations in 2 file(s)`；pure LOC 为 `report_quality.py=134`、`test_report_quality_evaluator.py=127`。
+
+后续事项：
+
+- Todo 12 可将该 evaluator 接入 workflow completion/status policy；本轮未改 workflow、source access/contracts 或报告渲染路径。
+
+## 2026-07-09 / Todo 1 LLM doctor sentinel cleanup
+
+修改文件：
+
+- `src/medical_research_agent/llm/doctor.py`
+- `tests/test_llm_config_doctor.py`
+- `tests/test_check_llm_config_cli.py`
+- `.omo/evidence/task-1-deep-free-source-llm-reporting.md`
+- `LOG.md`
+
+改动摘要：
+
+- 将 LLM doctor 内部 smoke key 与 redaction 测试里的假 token 改为 `doctor-fake-*` 形态，避免测试/证据中的非真实值被 secret scanner 误判。
+- 保留 stdout/stderr redaction 断言，继续验证 sentinel 不会出现在诊断输出中。
+- 更新 Todo 1 evidence，移除旧的 secret-shaped fake-token 示例描述。
+
+测试与检查：
+
+- secret-shaped token 与 literal authorization-token 扫描仅剩安全误报：`LOG.md` 中历史 `.omo/evidence/task-*` 路径、`examples/ingest_local_files.py` 的 `--task-id` 帮助文本、LLM client 动态 authorization header 构造、LLM doctor authorization prefix 校验；没有剩余 fake API key literal。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_llm_config_doctor.py tests\test_check_llm_config_cli.py tests\test_llm_client.py -q` 通过：`14 passed in 2.66s`。
+- OMO no-excuse 对本次 touched Python files 通过：`no violations in 3 file(s)`。
+
+## 2026-07-09 / Todo 8 deep-free-source LLM source triage and bounded gap loop
+
+修改文件：
+
+- `src/medical_research_agent/source_triage.py`
+- `src/medical_research_agent/source_triage_models.py`
+- `src/medical_research_agent/workflow/source_nodes.py`
+- `src/medical_research_agent/workflow/follow_up.py`
+- `tests/test_llm_source_triage.py`
+- `tests/test_follow_up_source_triage.py`
+- `tests/test_evidence_gap_followup.py`
+- `.omo/evidence/task-8-deep-free-source-llm-reporting.md`
+- `.omo/plans/deep-free-source-llm-reporting.md`
+- `.omo/start-work/ledger.jsonl`
+- `LOG.md`
+
+改动摘要：
+
+- 新增 LLM-assisted source triage 组合层：先复用 deterministic `source_quality` gate，再读取 connector/access verifier 已写入的 `access_check` / `citation_eligibility`，最后用结构化 LLM JSON 对候选来源做 topic fit、facet fit、source type fit 和 citation usability 判定。
+- LLM triage 输出使用 Pydantic schema 校验；malformed JSON、缺 key、provider unsupported、LLM request failure、privacy block 都会退回 deterministic + access gate 并写入 audit reason，不让自由文本直接通过。
+- 明确防护 source text prompt injection：来源 title/snippet/abstract 被视为不可信文本，不能覆盖 privacy、free-link、citation 或 bounded-search 规则。
+- real connector search 现在通过 `review_sources_with_configured_llm_triage(...)` 输出 accepted/rejected/pending_review，并把 pending 作为 rejected audit 保留在 workflow state。
+- bounded follow-up 搜索现在也经过 triage；follow-up metadata 保留 `gap_facet`、`gap_description`、`follow_up_round` 和 `bounded`，并在解析前拒绝 paywalled/login/metadata-only 等不可最终引用来源。
+- 为新增 follow-up triage 回归拆出 `tests/test_follow_up_source_triage.py`，避免 `tests/test_evidence_gap_followup.py` 超过 OMO 250 LOC 规则。
+
+测试与检查：
+
+- `.\.venv\Scripts\python.exe -m pytest tests\test_llm_source_triage.py tests\test_evidence_gap_followup.py tests\test_follow_up_source_triage.py -q` 通过：`10 passed, 1 warning`。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_source_relevance.py tests\test_source_routing.py tests\test_workflow_sources.py tests\test_research_quality_regressions.py -q` 通过：`13 passed, 1 warning`。
+- `.\.venv\Scripts\python.exe -m pytest -q` 通过：`147 passed, 1 warning`。
+- OMO no-excuse 对 Todo 8 touched Python files 通过：`no violations in 7 file(s)`。
+- 体积检查：`source_triage.py=225`、`source_triage_models.py=213`、`workflow/source_nodes.py=218`、`workflow/follow_up.py=220`、`tests/test_evidence_gap_followup.py=231`、`tests/test_follow_up_source_triage.py=107`、`tests/test_llm_source_triage.py=168` pure LOC。
+
+关键决定：
+
+- `source_quality.py` 继续保持 deterministic relevance/credibility 职责，未继续扩展该 warning-band 文件；LLM JSON、access gate 和 prompt-injection 防护放入新的 `source_triage*` 模块。
+- workflow 默认仍能在 mock/no key 环境下运行；真实 provider triage 只有配置可用时参与，失败不会让检索节点崩溃。
+- Todo 8 不做证据抽取或深度报告写作；这些仍留给 Todo 9 和 Todo 11。
+
+后续事项：
+
+- `source_triage.py`、`source_triage_models.py`、`workflow/source_nodes.py`、`workflow/follow_up.py` 都处于 200-250 LOC warning band；后续继续扩展前应优先拆分。
+- 一名 OMO 子执行器曾误写 `outputs/evidence/todo8_llm_source_triage_pytest_20260709.txt`，已删除该文件和空目录；`outputs/` 仍不提交。
+
+## 2026-07-10 / Todos 9-11 source-bound LLM evidence, citation filtering, and deep report writing
+
+修改文件：
+
+- `src/medical_research_agent/llm_evidence.py`
+- `src/medical_research_agent/llm_evidence_models.py`
+- `src/medical_research_agent/llm_evidence_output.py`
+- `src/medical_research_agent/workflow/evidence_nodes.py`
+- `src/medical_research_agent/workflow/nodes.py`
+- `src/medical_research_agent/report_models.py`
+- `src/medical_research_agent/report_templates.py`
+- `src/medical_research_agent/templates/report_markdown.j2`
+- `src/medical_research_agent/llm_report_models.py`
+- `src/medical_research_agent/llm_report_grounding.py`
+- `src/medical_research_agent/llm_report_writer.py`
+- `src/medical_research_agent/workflow/report_writer_nodes.py`
+- `src/medical_research_agent/workflow/report_nodes.py`
+- `tests/test_llm_evidence_extraction.py`
+- `tests/test_workflow_llm_evidence.py`
+- `tests/test_report_citation_eligibility.py`
+- `tests/test_llm_report_writer.py`
+
+改动摘要：
+
+- 新增 schema-bound LLM evidence extractor，只处理具有 item-level final-citable URL 的公开来源；输出 evidence/spec/claim 均校验 `source_id`、`document_id`、URL、quote/location 和 evidence index。
+- workflow 的 evidence 节点保持 deterministic extractor 为永久 fallback；仅在真实 `openai_compatible` provider 配置时叠加 LLM evidence，mock/private-only/malformed/缺 key/请求失败不会清空原证据。
+- 私有与内部资料继续 local-only：不会进入外部 LLM prompt，并在 intermediate/errors 中记录 skipped private source IDs。
+- final reference rendering 新增 citation projection：只有一致的 `AccessCheck` + `CitationEligibility` 才进入最终参考文献；不可引用来源保留在 JSON 和“来源审计与证据缺口”附录。
+- PubMed `abstract_accessible` 引用明确标注“仅摘要证据，非全文”。
+- 新增 deep LLM report writer：按 planned semantic sections 生成长文、表格和 source-linked claims；未知/不可引用 source、未知 evidence、link mismatch、缺失章节、malformed JSON 均降级为 deterministic/explicit-gap `needs_review`。
+- final references 仍由 deterministic citation projection 生成，LLM 无权新增任意引用；strong claims 仍需经过现有 claim verifier 后才能标记 supported。
+
+测试与检查：
+
+- Todo 9 extractor：`6 passed`；evidence/privacy subset：`18 passed`；workflow integration subset：`22 passed, 1 warning`。
+- Todo 10 citation tests：`2 passed, 1 warning`；独立 report regression subset：`12 passed, 1 warning`。
+- Todo 11 writer tests：`5 passed, 1 warning`；report/claim/citation/outline regression gate：`24 passed, 1 warning`。
+- Full suite：`164 passed, 1 warning in 50.52s`。
+- OMO no-excuse 对 Todo 9-11 touched Python surface：`no violations in 16 file(s)`。
+- secret-shaped literal scan 无匹配；`.env`、`outputs/`、`data/`、`cache/`、`uploads/` 仍未作为提交内容引入。
+
+关键决定：
+
+- `evidence.py` 和既有 deterministic `report_writer.py` 不扩写；LLM 功能放入独立模块并通过小型 workflow adapter 接入。
+- LLM writer 初版达到 292 pure LOC，被 no-excuse 阻止后拆出 `llm_report_grounding.py`；最终 writer 为 191 pure LOC。
+- 本轮创建子智能体时按用户要求使用 `gpt-5.6-terra` + `high`。Todo 9 核心与 Todo 10 子智能体成功交付；后续 integration/writer 子智能体空结束，主线程在同一 OMO 测试/证据约束下完成剩余小切片。
+
+后续事项：
+
+- Todo 12 仍需把 report-quality evaluator 接入 workflow completion/status 与 CLI 输出。
+- `llm_evidence.py` 当前 236 pure LOC，进入 warning band；后续扩展前应先拆分。
+
+## 2026-07-12 / Todo 13 deep-free-source LLM smoke, docs, and cleanup
+
+修改文件：
+
+- `src/medical_research_agent/connectors/crossref.py`
+- `tests/test_connectors_sources.py`
+- `README.md`
+- `LOG.md`
+- `.omo/evidence/task-13-deep-free-source-llm-reporting.md`
+
+改动摘要：
+
+- 完成 redacted LLM doctor 和 mock OpenAI-compatible smoke：本机未发现 `.env`，因此保持 `provider=mock`、`api_key_set=false`；mock smoke 验证了 client payload/retry/privacy/provider-switching 路径。真实 provider 仍仅在用户配置真实 key 后执行，且不记录 key。
+- Todo 13 的实际文献/监管/产品 CLI smoke 首次暴露 Crossref 日期解析缺陷：嵌套 `date-parts=[[null]]` 触发 `int(None)` 并中断 workflow。新增参数化回归后，Crossref 逐一尝试 `published-print`、`published-online`、`published`、`issued`，跳过不可解析候选；没有可解析日期时保留 `published_at=None`，且不改变 Crossref metadata-only 最终引用资格。
+- 重新运行原始文献/监管/产品 topic 后，workflow 在 180 秒内正常返回 `needs_more_sources`，而不是崩溃；报告/PDF/状态/rejected-source 审计均落盘。公司/国内公开信息 topic 的保留 smoke 同样诚实返回 `needs_more_sources`，未伪造最终引用。
+- README 现在明确 mock-vs-real provider 边界、quality status/CLI 诊断、item-level free citation 条件、private-source egress 默认和 runtime output 清理规则。
+
+测试与检查：
+
+- Doctor：`examples\check_llm_config.py` 输出 `provider=mock`、`api_key_set=false`；`--mock-provider-smoke` 输出 `mock_provider_smoke=ok` 和 `retry_attempts=1`，无 secret。
+- Red：新的 Crossref 日期参数化测试在修复前 `2 failed, 1 passed`，两项失败均为 `TypeError: int() ... NoneType`。
+- Green：同一测试 `3 passed in 0.25s`；受影响 connector tests `16 passed in 2.75s`；full suite `177 passed, 1 warning in 55.99s`，低于 180 秒；OMO no-excuse 对本轮两个 Python 文件 `no violations in 2 file(s)`。
+- 实际 workflow smokes：公司/国内公开信息 run 为 `needs_more_sources`、quality `0.2`、`0 accepted / 3 rejected`、regulatory source gap；文献/监管/产品 run 为 `needs_more_sources`、quality `0.2`、`0 accepted / 7 rejected`、stimulation/electrode_contacts/regulatory source gaps。两者均生成 Markdown/PDF，PDF header 为 `%PDF-`，报告引用数为 0，因此没有不合格的最终引用；文献 run 还保留两条 Semantic Scholar 429 retryable 诊断。
+- 清理：未请求保留输出，已删除 `outputs/todo13-company-smoke/`、`outputs/todo13-literature-smoke/` 及五份临时 Todo 13 transcript；精确 `Test-Path` 回执均为 `False`。
+
+关键决定：
+
+- 对 live public source 的无来源结果，`needs_more_sources` 加上 facet-scoped gaps、rejected-source audit 和零最终引用是预期的安全行为，不将 report/PDF 文件存在误报为 completed。
+
+## 2026-07-12 / Todo 13 Crossref scalar date-envelope follow-up
+
+修改文件：
+
+- `src/medical_research_agent/connectors/crossref.py`
+- `tests/test_connectors_sources.py`
+- `LOG.md`
+- `.omo/evidence/task-13-deep-free-source-llm-reporting.md`
+
+改动摘要：
+
+- 独立 verifier 发现第二个 Crossref raw-date 边界：`issued='not-a-date-object'` 会在日期 helper 的首个 `.get` 抛出 `AttributeError`。helper 现在仅在候选为 `Mapping` 时读取 `date-parts`；scalar/malformed candidate 归一化为 `None`，既有候选循环会继续尝试低优先级有效日期。
+- 新增回归覆盖 scalar `published-print` + 有效 `issued` 回退，以及 scalar-only `issued` 仍生成 metadata-only source 并保持 `published_at=None`。没有扩大 Crossref item schema 校验或 workflow exception handling。
+
+测试与检查：
+
+- Red：Crossref 日期参数化测试在修复前 `2 failed, 3 passed in 0.64s`，两项均为 `AttributeError: 'str' object has no attribute 'get'`。
+- Green：同一测试 `5 passed in 0.26s`；受影响 connector suite `18 passed in 4.20s`；full suite `179 passed, 1 warning in 59.18s`，低于 180 秒；OMO no-excuse `no violations in 2 file(s)`。
+- 再次运行原始文献/监管/产品 CLI topic 后，workflow 在 180 秒内 exit 0 且不再崩溃；由于 live public-network 返回变化，结果为 `needs_review`、quality `0.4`、`1 accepted / 9 rejected`、1 条 Semantic Scholar 429 retryable error。报告仍为零最终链接，PDF header `%PDF-`，stimulation/regulatory gaps 保留而 electrode_contacts 标记 covered。该网络快照替代此前同题目的 `0 accepted / 7 rejected` 统计，不表示质量完成。
+- 未请求保留运行产物；新建的 scalar-boundary smoke directory 和 full/CLI transcript 已在 evidence capture 后删除。
+- 本轮没有向外部 LLM 发送私有内容；`.env` 缺失且配置保持 mock。远程公开 source text 未进入真实 provider，prompt-injection egress 通过既有 source-triage policy/test 约束，而非用 smoke 假装验证了真实 provider。
+
+## 2026-07-12 / Todo 15 source-contract, Crossref envelope, strategy LLM, and follow-up route integrity
+
+修改文件：
+
+- `src/medical_research_agent/workflow/source_access_contracts.py`
+- `src/medical_research_agent/workflow/source_nodes.py`
+- `src/medical_research_agent/workflow/follow_up.py`
+- `src/medical_research_agent/workflow/nodes.py`
+- `src/medical_research_agent/evidence_gaps.py`
+- `src/medical_research_agent/connectors/crossref.py`
+- `tests/test_workflow_source_routes.py`
+- `tests/test_follow_up_source_triage.py`
+- `tests/test_follow_up_preferred_routes.py`
+- `tests/test_llm_source_strategy.py`
+- `tests/test_crossref_resilience.py`
+- `.omo/evidence/task-15-deep-free-source-llm-reporting.md`
+
+改动摘要：
+
+- 初始检索和 bounded follow-up 共享 restrictive access-contract gate；Crossref 等已声明 `metadata_only` 的来源不会再被通用 verifier 提升为最终可引用来源，也不会进入解析。
+- Crossref 对非 mapping 根/信封返回 parser-classified connector error，跳过标量 item/author，保留既有标量日期回退行为。
+- `plan_research` 现在将配置 LLM client 传入 source strategy；私有本地请求仍在 strategy 层阻断外部 completion。
+- follow-up 从已有 search plan 继承 `preferred_connectors` 并复用 route builder；无公开 route 的项目不执行 public connector，保持每项的 bounded limit。
+
+测试与检查：
+
+- 红测分别覆盖合同覆盖、Crossref 根/author、workflow LLM 注入和 preferred follow-up route；修复后 Todo 15 聚焦批次 `37 passed, 1 warning in 11.45s`。
+- 完整测试：`189 passed, 1 warning in 76.94s`；OMO no-excuse：`no violations in 11 file(s)`。
+- 内存 manual harness 验证配置 LLM 调用一次、metadata-only Crossref 拒绝、畸形 Crossref 安全处理、`pmc`/`accessgudid` 路由且零 DuckDuckGo fallback。
+
+后续事项：
+
+- 本机无 `.env` 和真实 API key，因此 real OpenAI-compatible provider 未执行；公开网络 connector 的接受率仍应视为运行时快照，不能替代确定性合同测试。
+
+## 2026-07-12 / Todo 16 final review boundary hardening
+
+修改文件：
+
+- `src/medical_research_agent/connectors/crossref.py`
+- `src/medical_research_agent/llm_report_grounding.py`
+- `src/medical_research_agent/report_models.py`
+- `src/medical_research_agent/workflow/follow_up.py`
+- `src/medical_research_agent/workflow/follow_up_search.py`
+- `tests/test_crossref_resilience.py`
+- `tests/test_report_boundary_hardening.py`
+- `tests/test_follow_up_preferred_routes.py`
+- `.omo/evidence/task-16-deep-free-source-llm-reporting.md`
+
+改动摘要：
+
+- Crossref 对 DOI、URL 或 publisher 为非标量的 mapping row 安全跳过，避免 Pydantic `ValidationError` 击穿 workflow。
+- LLM 报告 section 现在必须有 evidence link；section claim 的 evidence 必须与 section evidence 相交。非字符串 `llm_triage.decision` 在来源审计中降级为保守的 `rejected_or_pending_source`。
+- bounded follow-up 在选择 connector 前跳过私有 source type，并对每个 item 的 connector 返回总量执行 limit 截断。connector 执行切片提取到 `follow_up_search.py`，保留 `follow_up._search_follow_up_sources` 兼容测试 seam。
+
+测试与检查：
+
+- Todo 16 聚焦 adversarial tests：`10 passed, 1 warning in 1.04s`。
+- 受影响回归批次：`45 passed, 1 warning in 8.76s`。
+- 完整测试：`195 passed, 1 warning in 122.45s`；唯一 warning 是既有的 LangGraph deprecation。
+- OMO no-excuse 对五个生产模块和三份回归测试：`no violations in 8 file(s)`。
+- 离线 `httpx.MockTransport` manual harness 确认 invalid Crossref mapping 返回零记录、source-only section 有 grounding errors、malformed triage 使用保守 audit reason、private follow-up 零 public connector calls、overproducing connector 截断至 item limit。
+
+清理与边界：
+
+- 本机仍无 `.env` 或 real provider key；所有 Todo 16 QA 为 offline/mock，不接触私有资料或真实 provider。
+- 首次 full-suite terminal handle 只显示 partial progress，按 inconclusive 处理并确认没有遗留 Python 进程；新鲜 TTY rerun 获得 exit-0 回执。
+- 已在 evidence capture 后删除临时 `.debug-journal.md` 及其唯一 local exclude entry；没有保留 Todo 16 runtime output 或临时 test receipt。
+
+## 2026-07-12 / Todo 17 SSRF and report-boundary security gate
+
+修改文件：
+
+- `src/medical_research_agent/url_security.py`
+- `src/medical_research_agent/connectors/url.py`
+- `src/medical_research_agent/parsers/web.py`
+- `src/medical_research_agent/parsers/pdf.py`
+- `src/medical_research_agent/source_access.py`
+- `src/medical_research_agent/report_models.py`
+- `tests/test_url_security_policy.py`
+- `tests/test_report_security_projection.py`
+- `tests/test_llm_evidence_extraction.py`
+- `tests/test_llm_evidence_private_boundary.py`
+- `LOG.md`
+
+改动摘要：
+
+- 新增共享 URL 安全策略：拒绝 `localhost`、loopback、private、link-local、reserved、unspecified 和 multicast 的字面 IP host；只允许 HTTP(S)，并在每个 redirect target 发起请求前重新校验。
+- URL metadata connector、HTML/PDF parser 与 source access verifier 全部改为手动逐跳请求。访问校验遇到策略拒绝时保守返回 `needs_review` 和明确原因，不会将该错误伪装为可访问来源。
+- 最终引用 projection 现在自行拒绝 `user_uploaded_private`/`internal_private`，并要求 `access_check.url` 与 `SourceRecord.url` 完全一致。因此直接调用 LLM report writer 也不会将这两类来源或其证据送入外部请求。
+- PDF parser 将既有 broad `Exception` 收窄为 `pypdf.errors.PdfReadError`，保留损坏 PDF 的 `DocumentParseError` 契约。
+- 将 267 行的 `test_llm_evidence_extraction.py` 中私有来源回归拆到独立 `test_llm_evidence_private_boundary.py`；原文件降至 244 行，测试语义不变。
+
+测试与检查：
+
+- Red：安全对抗测试在修复前 `11 failed in 10.56s`，覆盖危险字面 IP、私网 redirect、私有 source 和 access URL mismatch 进入报告 LLM payload。
+- Green：同一对抗测试 `11 passed in 11.86s`；受影响 parser/verifier/citation/LLM 回归均通过。
+- Full suite：`206 passed, 1 warning in 115.29s`；唯一 warning 是既有 LangGraph deprecation。
+- OMO no-excuse：10 个触及 Python 文件 `no violations in 10 file(s)`。
+- Manual QA：公共 `URLSourceConnector` API 对 `http://127.0.0.1/admin` 返回 `url: blocked host: loopback`，未发出网络请求。
+
+关键决定：
+
+- 禁止使用 HTTP client 的自动 redirect；安全策略必须在下一跳 request 之前执行，避免 verifier/parser 在获得最终 URL 后才发现私网地址。
+- 隐私和 citation URL 一致性在 projection 层再次执行，即使上游 evidence extractor 已有类似检查，也避免直接 report-writer 调用绕过 LLM egress 边界。
+## 2026-07-13 / Todo 12 report-quality workflow gate completion
+
+修改文件：
+
+- `src/medical_research_agent/report_quality.py`
+- `src/medical_research_agent/workflow/status_policy.py`
+- `src/medical_research_agent/workflow/quality_nodes.py`
+- `examples/run_source_workflow.py`
+
+改动摘要：
+
+- 将报告质量评估接入 workflow 状态与 CLI 摘要；只有来源相关性、可免费访问引用、证据广度、章节深度、结论支撑和 PDF 产物均满足时才允许 `completed`。
+- 缺失或不通过的质量结果保持 `needs_review` / `needs_more_sources`，异常与致命错误继续优先覆盖既有状态。
+
+## 2026-07-13 / Todo 17 global security and code-quality gates
+
+修改文件：
+
+- `src/medical_research_agent/url_security.py`
+- `src/medical_research_agent/report_models.py`
+- `src/medical_research_agent/llm_report_writer.py`
+- `tests/test_url_security_policy.py`
+- `tests/test_report_security_projection.py`
+- `tests/test_research_quality_regressions.py`
+
+改动摘要：
+
+- 公共 URL 获取在初始请求和每个重定向目标上拒绝回环、私网、链路本地、保留、未指定及组播地址，并对生产传输解析主机名后检查全部地址；离线 `MockTransport` 测试不触发真实 DNS。
+- 引用投影与外部报告 LLM 输入双重排除私有来源及 `access_check.url != source.url` 的伪造元数据。
+- 将变更过的质量回归测试压缩到 250 纯代码行，并以 adversarial 安全测试和 no-excuse 检查锁定边界。
+
+关键决定：
+
+- DNS 失败按不可安全获取处理；解析结果中只要存在非公网地址即拒绝，避免 DNS rebinding/多地址主机绕过。
+
+## 2026-07-13 / Todo 17 DNS rebinding TOCTOU closure
+
+修改文件：
+- `src/medical_research_agent/url_security.py`
+- `tests/test_url_security_policy.py`
+
+改动摘要：
+- 将 DNS 校验移到 HTTP Core 的实际 TCP 连接边界，并把已校验的公网 IP 直接传给底层连接，消除“策略校验后由传输层再次解析域名”的 DNS rebinding 时间窗口。
+- HTTP 请求仍保留原始域名，因此 HTTPS SNI 和证书主机名校验不变；每个重定向目标在连接前重新执行同一策略。
+- 明确拒绝环境变量或显式配置产生的 HTTP proxy transport，因为代理端远程 DNS 无法证明最终连接地址；离线 `MockTransport` 行为保持不变。
+
+测试与检查：
+- Red：确定性重绑定回归测试显示校验阶段为 `93.184.216.34`、实际连接阶段变为 `169.254.169.254`，结果 `1 failed in 0.95s`。
+- Green：URL 安全测试 `13 passed in 8.14s`；受影响 URL/access/parser/connector 测试 `45 passed in 31.14s`。
+- OMO no-excuse：`url_security.py` 与 `test_url_security_policy.py` 为 `no violations in 2 file(s)`。
+
+## 2026-07-13 / Todo 17 ProductSpec external-LLM privacy closure
+
+修改文件：
+- `src/medical_research_agent/llm_report_writer.py`
+- `tests/test_report_security_projection.py`
+- `.omo/evidence/task-17-deep-free-source-llm-reporting.md`
+
+改动摘要：
+- 外部报告 LLM 的 ProductSpec 投影现在要求 `source_ids` 与 `evidence_ids` 均非空，所有 source/evidence 均通过公开可引用过滤，并且每条 evidence 的真实来源必须属于该 spec 声明的 source。
+- 新增 secret-marker 对抗回归，覆盖空 source、空 evidence、跨来源 evidence、私有 source 和私有 evidence；合法公开 spec 保留为正向控制。
+
+测试与检查：
+- Red：聚焦回归修复前 `1 failed in 0.72s`，捕获的外部请求包含未充分 grounding 的 secret-marked ProductSpec。
+- Green：聚焦 `1 passed in 0.47s`；报告 writer/grounding/security/workflow 受影响批次 `16 passed, 1 warning in 2.07s`。
+- Full suite：`211 passed, 1 warning in 110.55s`，退出码 0；唯一 warning 为既有 LangGraph deprecation。
+- OMO no-excuse：两个触及 Python 文件 `no violations in 2 file(s)`。
+
+隐私边界：
+- 未调用真实外部 provider，未读取私有文档；测试中的 secret marker 均为合成字符串。
+
+## 2026-07-13 / Outbound URL safety documentation closure
+
+修改文件：
+- `README.md`
+- `LOG.md`
+
+改动摘要：
+- 明确用户提供的公网 URL 及每个重定向目标都会拒绝非公网地址，实际连接固定到已验证公网 IP；显式或环境 HTTP 代理按 fail-closed 处理。
+- 连接固定由公开 `httpx.BaseTransport` 扩展点与标准库 socket/TLS 实现，不依赖 `httpx` / `httpcore` 私有接口。
+
+## 2026-07-13 / F2 MVP flow test-size closure
+
+修改文件：
+- `tests/mvp_flow_fixtures.py`
+- `tests/test_mvp_flow_expectations.py`
+- `tests/test_mvp_flow_outputs.py`
+- `.omo/evidence/f2-mvp-test-size-fix-deep-free-source-llm-reporting.md`
+
+改动摘要：
+- 将确定性 MVP workflow fixture、证据断言和报告/产物断言按职责拆分，保留原有 3 条测试行为与覆盖。
+- 移除 `test_mvp_flow_expectations.py` 的 `SIZE_OK` 抑制；拆分后三个文件分别为 176、26、63 纯代码行。
+
+测试与检查：
+- 拆分前基线和拆分后聚焦测试均为 `3 passed, 1 warning`，退出码 0。
+- OMO no-excuse 对三个 Python 文件报告 `no violations in 3 file(s)`；Python 编译检查退出码 0。
+
+## 2026-07-13 / Todo 17 workflow integrity and quality-boundary closure
+
+修改文件：
+
+- `src/medical_research_agent/workflow/follow_up.py`
+- `src/medical_research_agent/source_strategy.py`
+- `src/medical_research_agent/workflow/nodes.py`
+- `src/medical_research_agent/report_models.py`
+- `src/medical_research_agent/workflow/quality_nodes.py`
+- `tests/test_follow_up_state_integrity.py`
+- `tests/test_llm_source_strategy.py`
+- `tests/test_workflow_quality_security.py`
+
+改动摘要：
+
+- 有界跟进只对新增来源和文档做确定性抽取，再与已有证据和产品参数合并去重；无跟进与成功跟进都不会再覆盖前序 LLM 结果。
+- 成功接受跟进来源时刷新 `source_quality_status`，避免初始 `needs_more_sources` 状态残留。
+- 来源策略对缺少 API key、不支持的 provider 和请求重试耗尽做确定性目录回退，并记录不含响应内容或密钥的分类诊断；provider 失败不再误记为 LLM JSON 无效。
+- 报告质量节点复用最终引用投影的私有来源、source ID、source/access URL 和 citation eligibility 边界，排除不可最终引用的来源对完成门禁计数的影响。
+
+测试与检查：
+
+- Red：首轮聚焦 `6 failed, 8 passed`，另有成功跟进状态探针 `1 failed`；精确诊断探针 `3 failed`。
+- Green：聚焦 `15 passed, 1 warning`；受影响批次 `44 passed, 1 warning`。
+- OMO no-excuse：8 个本轮 Python 文件 `no violations in 8 file(s)`；`git diff --check` 退出码 0。
+- 并发 connector resource/URL transport 修改完成并合并后，最终全量为 `275 passed, 1 warning in 73.70s`、退出码 0；该结果取代编辑重叠期间的临时失败回执。
+
+关键决定：
+
+- 跟进节点采用“已有 LLM/确定性结果 + 新跟进确定性结果”的增量合并语义，而不是重新处理全部文档并替换状态。
+- provider 错误诊断仅记录错误类型、环境变量名、provider 名或重试次数，不记录响应正文和密钥。
+
+## 2026-07-13 / Public connector inventory documentation closure
+
+修改文件：
+- `README.md`
+- `LOG.md`
+
+改动摘要：
+- README 补齐 PMC、Europe PMC、OpenAlex、AccessGUDID 与 PatentsView，并明确开放全文、检索/摘要和 metadata-only 的能力边界；Crossref 继续仅作元数据发现。
+
+## 2026-07-13 / Todo 17 stable public transport and non-global IP closure
+
+修改文件：
+
+- `src/medical_research_agent/url_security.py`
+- `src/medical_research_agent/public_http_transport.py`
+- `src/medical_research_agent/connectors/url.py`
+- `src/medical_research_agent/parsers/web.py`
+- `src/medical_research_agent/parsers/pdf.py`
+- `src/medical_research_agent/source_access.py`
+- `tests/test_url_security_policy.py`
+- `tests/test_public_url_transport.py`
+- `.omo/evidence/task-17-deep-free-source-llm-reporting.md`
+
+改动摘要：
+
+- 公网 URL 策略改为要求 IP 全局可路由，并额外拒绝 IPv6 deprecated site-local 地址，补齐 CGNAT `100.64.0.0/10` 等 selected-flag denylist 漏洞。
+- 用自有 `PublicURLFetcher`、公开 `httpx.BaseTransport` 扩展点及标准库 socket/TLS 替换对 HTTPX/HTTPCore 私有连接池字段的修改，不再关闭或改写调用方共享连接池。
+- TCP 直接连接一次解析并校验后的 IP；Host、TLS SNI 和证书主机名仍使用原始域名。每跳重定向重新执行策略，代理路径 fail-closed，仅允许显式 `MockTransport` 作为离线测试 seam。
+- parser、URL connector 与 access verifier 现在确定性拥有并关闭安全 fetcher；无共享池的每请求连接模型避免并发请求相互修改 transport 状态。
+
+测试与检查：
+
+- Red：CGNAT 用例 `1 failed, 2 passed`；稳定 transport API 红测在旧实现上导入失败。
+- Green：核心 URL/parser/access 聚焦 `38 passed`；typed-origin 重构后受影响批次 `83 passed, 1 warning in 22.87s`。
+- Full suite：`275 passed, 1 warning in 73.82s`，退出码 0。
+- `compileall`、`git diff --check` 通过；OMO no-excuse 为 `no violations in 8 file(s)`；URL 安全实现中不再存在 `httpcore` 导入或私有 transport/pool/network-backend 访问。
+
+## 2026-07-13 / Todo 17 connector resilience and HTTP ownership closure
+
+修改文件：
+
+- `src/medical_research_agent/connectors/base.py`
+- `src/medical_research_agent/connectors/accessgudid.py`
+- `src/medical_research_agent/connectors/europe_pmc.py`
+- `src/medical_research_agent/connectors/openalex.py`
+- `src/medical_research_agent/connectors/patentsview.py`
+- `src/medical_research_agent/connectors/pmc.py`
+- `src/medical_research_agent/connectors/pubmed.py`
+- `src/medical_research_agent/http_client.py`
+- `src/medical_research_agent/resource_context.py`
+- `src/medical_research_agent/workflow/source_nodes.py`
+- `src/medical_research_agent/workflow/source_parsing.py`
+- `src/medical_research_agent/workflow/follow_up.py`
+- `src/medical_research_agent/workflow/follow_up_search.py`
+- `tests/test_connector_json_resilience.py`
+- `tests/test_http_client_ownership.py`
+
+改动摘要：
+
+- 六个 F2 点名连接器统一在 JSON 根边界要求 object；畸形嵌套 object/list 和标量 item 被安全归一化或跳过，非 object 根转为带分类的 `ConnectorError`，不再让 `AttributeError` 中断 workflow。
+- NCBI 摘要字段、Europe PMC/OpenAlex 年份等可选元数据增加类型与范围归一化，保留可审计的 fallback 来源记录。
+- 所有 `SourceConnector` 明确记录 HTTP client 所有权：自建 client 在上下文退出时关闭，注入 client 保持由调用方管理。
+- 主搜索、follow-up 和批量解析使用 `managed_resource` 建立确定性关闭边界；不实现上下文协议的测试替身或扩展 adapter 继续通过 `nullcontext` 工作。
+
+测试与检查：
+
+- 首轮 Red：`44 failed`；嵌套字段第二轮 Red：`3 failed, 26 passed`。
+- 聚焦 Green：`51 passed`；连接器与 workflow 受影响批次：`95 passed, 1 warning`。
+- OMO no-excuse：`no violations in 20 file(s)`；`compileall` 与 `git diff --check` 退出码 0。
+- 项目虚拟环境未安装 `ruff`，因此未声明 ruff 结果；所有新增/触及职责文件均低于 250 纯代码行。
+
+## 2026-07-13 / Todo 17 NCBI optional-date range closure
+
+修改文件：
+
+- `src/medical_research_agent/connectors/pubmed.py`
+- `src/medical_research_agent/connectors/pmc.py`
+- `tests/test_connector_json_resilience.py`
+- `.omo/evidence/task-17-deep-free-source-llm-reporting.md`
+
+改动摘要：
+
+- 独立复核发现 PubMed/PMC 对合法 JSON 中越界的可选日期仍可能抛出 `ValueError` 并丢弃整个来源；两个日期解析器现在将 `datetime` 范围错误保守归一化为 `None`，同时保留其余可审计来源元数据。
+
+测试与检查：
+
+- Red：PubMed 越界年份回归为 `1 failed`，错误为 `year 999999 is out of range`。
+- Green：连接器 JSON 韧性测试 `30 passed`；三个触及 Python 文件的 OMO no-excuse 为 `no violations in 3 file(s)`，`compileall` 退出码 0。
+- 独立受影响批次：连接器、client ownership、access verifier、parser、follow-up 与真实来源 workflow 共 `107 passed, 1 warning`；20 个相关文件的 OMO no-excuse 为 `no violations in 20 file(s)`，`git diff --check` 退出码 0。
+
+## 2026-07-13 / Todo 17 公网响应体资源上限闭环
+
+修改文件：
+
+- `src/medical_research_agent/public_http_transport.py`
+- `src/medical_research_agent/url_security.py`
+- `tests/test_public_url_transport.py`
+- `tests/test_free_access_verifier.py`
+- `tests/test_parsers_documents.py`
+- `.omo/evidence/task-17-deep-free-source-llm-reporting.md`
+
+改动摘要：
+
+- 公网抓取新增 typed 10 MiB 默认响应上限：GET 在有效 `Content-Length` 已超限时读前拒绝，无长度/分块响应按 HTTPX 解码后字节流累计计数，压缩响应的解码膨胀也受同一上限约束；HEAD 保留仅取元数据的语义和源站 `Content-Length`。
+- 固定公网 IP 的 transport 改为把 HTTP response/socket 所有权交给 `SyncByteStream`，正常完成、声明长度拒绝和流式中途超限都会确定性关闭连接。
+- 超限统一抛出 `PublicURLPolicyError`；access verifier 降级为不可引用的 `NEEDS_REVIEW`，网页/PDF parser 转为 `DocumentParseError`，不暴露部分内容也不伪装成功。
+
+测试与检查：
+
+- Red：三类攻击用例 `3 failed, 5 passed`；HEAD 元数据控制随后捕获源站长度被改写为 `0` 的兼容性回归。Green：transport/verifier/parser 专项 `30 passed`。
+- 受影响批次：`92 passed, 1 warning`；全量：`283 passed, 1 warning in 68.55s`，退出码 0。
+- OMO no-excuse：`no violations in 5 file(s)`；`compileall`、`git diff --check` 退出码 0。
+- 生产 transport 真实公网 smoke：`https://example.com/` HEAD/GET 均返回 200，HEAD body 为 0 bytes，GET 为 559 HTML bytes，response 与 client 均确认关闭。
+
+## 2026-07-13 / Todo 17 固定公网传输流式读取异常闭环
+
+修改文件：
+
+- `src/medical_research_agent/public_http_transport.py`
+- `tests/pinned_transport_stream_fixtures.py`
+- `tests/test_public_url_transport.py`
+- `tests/test_parsers_documents.py`
+- `tests/test_free_access_verifier.py`
+- `.omo/evidence/task-17-deep-free-source-llm-reporting.md`
+
+改动摘要：
+
+- 固定公网 transport 在响应交给 HTTPX 后，流式 `HTTPResponse.read()` 产生的 stdlib 协议异常和 socket 读取异常分别转换为绑定原始 request 的 `httpx.RemoteProtocolError` 与 `httpx.ReadError`。
+- 流式失败先关闭 response 和 connection；response 关闭路径使用 `finally`，保证仍会尝试关闭底层连接。
+- 网页 parser 将该错误稳定映射为 `DocumentParseError`，access verifier 降级为不可引用的 `NEEDS_REVIEW`，不再由原始 stdlib 异常中断 workflow。
+
+测试与检查：
+
+- Red：生产 transport、parser 和 verifier 四个回归用例为 `4 failed in 1.29s`，捕获原始 `IncompleteRead` 与 `OSError` 穿透。
+- Green：聚焦 `4 passed in 0.54s`；受影响批次 `50 passed, 1 warning in 1.69s`；全量 `287 passed, 1 warning in 68.10s`，退出码 0。
+- OMO no-excuse：`no violations in 5 file(s)`；`compileall` 和 `git diff --check` 退出码 0。
+- 生产公网 smoke：`https://example.com/` GET 为 200、559 bytes，response 与 owned client 均确认关闭。
+
+## 2026-07-13 / Todo 17 声明长度静默截断闭环
+
+修改文件：
+
+- `src/medical_research_agent/public_http_transport.py`
+- `tests/pinned_transport_stream_fixtures.py`
+- `tests/test_public_url_transport.py`
+- `tests/test_parsers_documents.py`
+- `tests/test_free_access_verifier.py`
+- `.omo/evidence/task-17-deep-free-source-llm-reporting.md`
+
+改动摘要：
+
+- 安全复核用真实 `http.client.HTTPResponse` 复现：响应声明 `Content-Length: 100`、只发送 19 bytes 时，分段 `read(amt)` 会在第二次读取直接返回空字节，不保证抛出 `IncompleteRead`。
+- 固定公网 stream 现在保存非 chunked 响应的原始预期长度并累计实际 raw bytes；声明长度未满足却遇到空读时，关闭 response/connection 并抛出绑定原始 request、包含已收/应收字节数的 `httpx.RemoteProtocolError`。
+- chunked 与无声明长度的 EOF-delimited 响应维持原有语义；parser 和 verifier 分别降级为 `DocumentParseError` 与不可引用的 `NEEDS_REVIEW`，残缺正文不会成为成功解析或可引用来源。
+
+测试与检查：
+
+- Red：transport/parser 未抛错，verifier 误记为 `PARSER_FAILED`，共 `3 failed in 0.82s`。
+- Green：静默 EOF 聚焦 `3 passed in 0.44s`；全部 stream 错误回归 `7 passed in 0.44s`；受影响批次 `53 passed, 1 warning in 1.73s`。
+- 全量：`290 passed, 1 warning in 71.08s`，退出码 0；OMO no-excuse `no violations in 5 file(s)`，`compileall` 与 `git diff --check` 退出码 0。
+- 真实公网正常路径：example.com GET 为 200、559 bytes，response 与 owned client 均确认关闭。

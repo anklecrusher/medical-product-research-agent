@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from medical_research_agent.connectors import ConnectorError, DuckDuckGoHTMLSearchConnector, SearchRequest
+from medical_research_agent.config import get_settings
+from medical_research_agent.connectors import DuckDuckGoHTMLSearchConnector, SearchRequest
 from medical_research_agent.evidence import extract_evidence_from_documents
 from medical_research_agent.evidence_dedup import deduplicate_evidence_items
 from medical_research_agent.evidence_gaps import detect_evidence_gaps, plan_follow_up_searches
 from medical_research_agent.parsers import DocumentParseError, PDFParser, WebPageParser
+from medical_research_agent.resource_context import managed_resource
 from medical_research_agent.schemas import EvidenceItem, ParsedDocument, ProductSpec, SourceRecord, SourceType
-from medical_research_agent.source_quality import review_source_quality
+from medical_research_agent.source_access import SourceAccessVerifier
+from medical_research_agent.source_contracts import CitationEligibility
+from medical_research_agent.source_triage import review_sources_with_configured_llm_triage
+from medical_research_agent.source_triage_models import with_access_metadata
+from medical_research_agent.source_quality import SourceQualityStatus
+from medical_research_agent.workflow.source_access_contracts import effective_access_check
+from medical_research_agent.workflow.follow_up_search import search_follow_up_sources as _search_follow_up_sources
+from medical_research_agent.workflow.source_nodes import route_connectors
 from medical_research_agent.workflow.state import NodeLog
 from medical_research_agent.workflow.state import ResearchPlan, SearchPlanItem, WorkflowState
 
@@ -33,6 +43,7 @@ class FollowUpAdapters:
     vendor_connector: SearchConnector
     web_parser: SourceParser
     pdf_parser: SourceParser
+    connector_selector: Callable[[SearchPlanItem], tuple[SearchConnector, ...]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,18 +74,37 @@ def run_bounded_follow_up(
     sources = list(state.get("sources", []))
     rejected = list(state.get("rejected_sources", []))
     documents = list(state.get("documents", []))
+    new_sources: list[SourceRecord] = []
+    new_documents: list[ParsedDocument] = []
     errors: list[str] = []
 
     if follow_up_items and state.get("use_real_connectors"):
-        raw_sources = _search_follow_up_sources(task.task_id, follow_up_items, adapters.vendor_connector, errors)
-        review = review_source_quality(raw_sources, plan.query_expansion)
+        raw_sources = _search_follow_up_sources(task.task_id, follow_up_items, adapters, errors)
+        unique_sources = _unique_sources_by_id(raw_sources)
+        with managed_resource(SourceAccessVerifier()) as verifier:
+            access_checks = [effective_access_check(source, verifier) for source in unique_sources]
+        verified_sources = [
+            with_access_metadata(source, access_check, CitationEligibility.from_access_check(access_check))
+            for source, access_check in zip(unique_sources, access_checks, strict=True)
+        ]
+        review = review_sources_with_configured_llm_triage(
+            verified_sources,
+            plan.query_expansion,
+            access_checks=access_checks,
+            require_access_check=True,
+        )
         accepted = [_mark_follow_up_source(source, follow_up_items) for source in review.accepted]
-        rejected.extend(_mark_follow_up_source(source, follow_up_items) for source in review.rejected)
+        rejected.extend(_mark_follow_up_source(source, follow_up_items) for source in (*review.rejected, *review.pending_review))
+        new_sources.extend(accepted)
         sources.extend(accepted)
-        documents.extend(_parse_follow_up_sources(accepted, adapters, errors))
+        new_documents.extend(_parse_follow_up_sources(accepted, adapters, errors))
+        documents.extend(new_documents)
 
-    extracted = extract_evidence_from_documents(task.task_id, sources, documents)
-    deduped = deduplicate_evidence_items(extracted.evidence, extracted.product_specs)
+    extracted = extract_evidence_from_documents(task.task_id, new_sources, new_documents)
+    deduped = deduplicate_evidence_items(
+        [*state.get("evidence", []), *extracted.evidence],
+        [*state.get("product_specs", []), *extracted.product_specs],
+    )
     final_gaps = detect_evidence_gaps(plan, sources, deduped.evidence)
     return FollowUpResult(
         sources=sources,
@@ -93,14 +123,30 @@ def run_bounded_follow_up(
 def follow_up_evidence_gaps(state: WorkflowState) -> dict[str, Any]:
     """Run one bounded follow-up search round for missing required facets."""
 
-    result = run_bounded_follow_up(
-        state,
-        FollowUpAdapters(
-            vendor_connector=DuckDuckGoHTMLSearchConnector(source_type=SourceType.VENDOR_PUBLIC_DOC),
-            web_parser=WebPageParser(),
-            pdf_parser=PDFParser(),
-        ),
-    )
+    settings = get_settings()
+    with (
+        managed_resource(DuckDuckGoHTMLSearchConnector(source_type=SourceType.VENDOR_PUBLIC_DOC)) as vendor_connector,
+        managed_resource(WebPageParser()) as web_parser,
+        managed_resource(PDFParser()) as pdf_parser,
+    ):
+        result = run_bounded_follow_up(
+            state,
+            FollowUpAdapters(
+                vendor_connector=vendor_connector,
+                web_parser=web_parser,
+                pdf_parser=pdf_parser,
+                connector_selector=lambda item: route_connectors(item, settings),
+            ),
+        )
+    intermediate: dict[str, Any] = {
+        "evidence_gaps": result.evidence_gaps,
+        "follow_up_searches": result.follow_up_searches,
+        "follow_up_round_count": result.follow_up_round_count,
+        "follow_up_added_source_count": result.follow_up_added_source_count,
+    }
+    if result.follow_up_added_source_count > 0:
+        intermediate["source_quality_status"] = SourceQualityStatus.HAS_ACCEPTED_SOURCES.value
+
     return {
         "sources": result.sources,
         "rejected_sources": result.rejected_sources,
@@ -108,12 +154,7 @@ def follow_up_evidence_gaps(state: WorkflowState) -> dict[str, Any]:
         "evidence": result.evidence,
         "product_specs": result.product_specs,
         "current_step": "follow_up_evidence_gaps",
-        "intermediate": {
-            "evidence_gaps": result.evidence_gaps,
-            "follow_up_searches": result.follow_up_searches,
-            "follow_up_round_count": result.follow_up_round_count,
-            "follow_up_added_source_count": result.follow_up_added_source_count,
-        },
+        "intermediate": intermediate,
         "errors": result.errors,
         "node_logs": [
             NodeLog(
@@ -129,43 +170,15 @@ def follow_up_evidence_gaps(state: WorkflowState) -> dict[str, Any]:
     }
 
 
-def _search_follow_up_sources(
-    task_id: str,
-    items: list[SearchPlanItem],
-    connector: SearchConnector,
-    errors: list[str],
-) -> list[SourceRecord]:
-    sources: list[SourceRecord] = []
-    for item in items:
-        request = SearchRequest(
-            query=item.query,
-            limit=item.limit,
-            task_id=task_id,
-            metadata={
-                "expanded_terms": item.expanded_terms,
-                "facet": item.facet.value if item.facet else None,
-                "source_type": item.source_type.value,
-                "preferred_connectors": item.preferred_connectors,
-                "follow_up_round": item.metadata["follow_up_round"],
-                "gap_facet": item.metadata["gap_facet"].value,
-                "bounded": True,
-            },
-        )
-        try:
-            records = connector.search(request)
-        except ConnectorError as exc:
-            errors.append(f"{exc} [follow_up_round=1; gap_facet={request.metadata['gap_facet']}]")
+def _unique_sources_by_id(sources: list[SourceRecord]) -> list[SourceRecord]:
+    seen: set[str] = set()
+    unique_sources: list[SourceRecord] = []
+    for source in sources:
+        if source.source_id in seen:
             continue
-        for record in records:
-            record.metadata.setdefault("rationale", item.rationale)
-            record.metadata.setdefault("facet", item.facet.value if item.facet else None)
-            record.metadata.setdefault("preferred_connectors", item.preferred_connectors)
-            record.metadata.setdefault("route_priority", item.route_priority)
-            record.metadata["follow_up_round"] = item.metadata["follow_up_round"]
-            record.metadata["gap_facet"] = item.metadata["gap_facet"].value
-            record.metadata["bounded"] = True
-        sources.extend(records)
-    return sources
+        seen.add(source.source_id)
+        unique_sources.append(source)
+    return unique_sources
 
 
 def _parse_follow_up_sources(
@@ -202,6 +215,7 @@ def _mark_follow_up_source(source: SourceRecord, items: list[SearchPlanItem]) ->
     if matched is not None:
         metadata["follow_up_round"] = matched.metadata["follow_up_round"]
         metadata["gap_facet"] = matched.metadata["gap_facet"].value
+        metadata["gap_description"] = matched.rationale
         metadata["bounded"] = True
     return source.model_copy(update={"metadata": metadata})
 
@@ -211,6 +225,7 @@ def _mark_follow_up_document(document: ParsedDocument, source: SourceRecord) -> 
         **document.metadata,
         "follow_up_round": source.metadata.get("follow_up_round"),
         "gap_facet": source.metadata.get("gap_facet"),
+        "gap_description": source.metadata.get("gap_description"),
         "bounded": source.metadata.get("bounded"),
     }
     return document.model_copy(update={"metadata": metadata})
@@ -236,5 +251,6 @@ def _search_snapshot(item: SearchPlanItem) -> dict[str, str | int | bool | list[
         "preferred_connectors": item.preferred_connectors,
         "follow_up_round": item.metadata["follow_up_round"],
         "gap_facet": item.metadata["gap_facet"].value,
+        "gap_description": item.rationale,
         "bounded": True,
     }

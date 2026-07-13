@@ -30,7 +30,7 @@ class DuckDuckGoHTMLSearchConnector(SourceConnector):
         timeout_seconds: float = 20.0,
         source_type: SourceType = SourceType.PUBLIC_WEB,
     ) -> None:
-        self._client = client or httpx.Client(timeout=timeout_seconds, follow_redirects=True)
+        super().__init__(client=client, timeout_seconds=timeout_seconds)
         self.source_type = source_type
 
     def search(self, request: SearchRequest) -> list[SourceRecord]:

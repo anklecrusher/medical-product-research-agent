@@ -6,8 +6,10 @@ import httpx
 import pytest
 from pypdf import PdfWriter
 
+from pinned_transport_stream_fixtures import incomplete_read, install_premature_eof, install_stream_failure
 from medical_research_agent.parsers import DocumentParseError, PDFParser, WebPageParser
 from medical_research_agent.schemas import DocumentFormat, SourceRecord, SourceType
+from medical_research_agent.url_security import DEFAULT_MAX_PUBLIC_RESPONSE_BYTES
 
 
 def _source(url: str = "https://example.com/page") -> SourceRecord:
@@ -43,10 +45,53 @@ def test_web_parser_fetch_error_is_clear() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("offline", request=request)
 
-    parser = WebPageParser(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    parser = WebPageParser(transport=httpx.MockTransport(handler))
 
     with pytest.raises(DocumentParseError, match="web_page_parser: fetch failed"):
         parser.parse_url(_source())
+
+
+def test_web_parser_maps_oversized_response_to_parse_error() -> None:
+    # Given: a public page declares a body beyond the shared response limit.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html", "content-length": str(DEFAULT_MAX_PUBLIC_RESPONSE_BYTES + 1)},
+            request=request,
+        )
+
+    # When/Then: the parser exposes its typed safe error instead of response bytes.
+    with WebPageParser(transport=httpx.MockTransport(handler)) as parser:
+        with pytest.raises(DocumentParseError, match="response body exceeds"):
+            parser.parse_url(_source())
+
+
+def test_web_parser_maps_pinned_stream_protocol_failure_to_parse_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: the production pinned transport receives a truncated HTTP body.
+    responses, connections = install_stream_failure(monkeypatch, incomplete_read())
+
+    # When/Then: the parser maps the typed transport failure to its domain error.
+    with WebPageParser() as parser:
+        with pytest.raises(DocumentParseError, match="fetch failed"):
+            parser.parse_url(_source("http://stream-failure.example/document"))
+    assert responses and all(response.closed for response in responses)
+    assert connections and all(connection.closed for connection in connections)
+
+
+def test_web_parser_rejects_pinned_silent_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a declared-length HTML response ends without delivering all raw bytes.
+    responses, connections = install_premature_eof(monkeypatch)
+
+    # When/Then: no partial document escapes the parser boundary.
+    with WebPageParser() as parser:
+        with pytest.raises(DocumentParseError, match="incomplete response body"):
+            parser.parse_url(_source("http://silent-eof.example/document"))
+    assert responses and all(response.closed for response in responses)
+    assert connections and all(connection.closed for connection in connections)
 
 
 def test_pdf_parser_extracts_page_count_even_without_text() -> None:

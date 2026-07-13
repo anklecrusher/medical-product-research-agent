@@ -17,8 +17,10 @@ def _signals(
     rejected_source_count: int = 0,
     evidence_count: int = 1,
     claim_count: int = 1,
-    source_quality_status: str | None = "sufficient",
+    source_quality_status: str | None = "has_accepted_sources",
     has_unresolved_evidence_gaps: bool = False,
+    prior_status: TaskStatus | None = None,
+    report_quality_passed: bool | None = None,
     errors: tuple[str, ...] = (),
 ) -> WorkflowCompletionSignals:
     return WorkflowCompletionSignals(
@@ -28,6 +30,8 @@ def _signals(
         claim_count=claim_count,
         source_quality_status=source_quality_status,
         has_unresolved_evidence_gaps=has_unresolved_evidence_gaps,
+        prior_status=prior_status,
+        report_quality_passed=report_quality_passed,
         errors=errors,
     )
 
@@ -88,14 +92,47 @@ def test_policy_needs_review_when_sources_exist_without_evidence() -> None:
 
 
 def test_policy_completed_when_run_has_evidence_without_review_signals() -> None:
-    # Given: the workflow has accepted sources, evidence, and no review signals.
-    signals = _signals()
+    # Given: the workflow has accepted sources, evidence, and a passing rendered quality snapshot.
+    signals = _signals(report_quality_passed=True)
 
     # When: completion status is decided.
     status = decide_workflow_status(signals)
 
     # Then: the run is complete.
     assert status == TaskStatus.COMPLETED
+
+
+def test_policy_needs_review_when_report_quality_snapshot_is_missing() -> None:
+    # Given: earlier workflow signals are sufficient, but rendering did not provide a quality snapshot.
+    signals = _signals()
+
+    # When: completion status is decided.
+    status = decide_workflow_status(signals)
+
+    # Then: completion remains blocked until the rendered-report gate explicitly passes.
+    assert status == TaskStatus.NEEDS_REVIEW
+
+
+def test_policy_needs_review_when_source_relevance_was_not_confirmed() -> None:
+    # Given: evidence exists, but source triage did not confirm a relevant accepted source set.
+    signals = _signals(source_quality_status=None)
+
+    # When: completion status is decided.
+    status = decide_workflow_status(signals)
+
+    # Then: the workflow cannot claim completion without the relevance gate.
+    assert status == TaskStatus.NEEDS_REVIEW
+
+
+def test_policy_needs_review_when_report_quality_fails() -> None:
+    # Given: source/evidence signals are otherwise sufficient, but the rendered report fails quality checks.
+    signals = _signals(report_quality_passed=False)
+
+    # When: completion status is decided.
+    status = decide_workflow_status(signals)
+
+    # Then: the task remains reviewable instead of being silently marked completed.
+    assert status == TaskStatus.NEEDS_REVIEW
 
 
 def test_policy_failed_when_fatal_error_exists_without_evidence() -> None:
@@ -106,6 +143,35 @@ def test_policy_failed_when_fatal_error_exists_without_evidence() -> None:
     status = decide_workflow_status(signals)
 
     # Then: the task is failed instead of merely under-sourced.
+    assert status == TaskStatus.FAILED
+
+
+def test_policy_failed_when_fatal_error_exists_with_evidence_and_passing_quality() -> None:
+    # Given: usable evidence and a passing report exist, but the workflow recorded an explicit fatal connector failure.
+    signals = _signals(
+        report_quality_passed=True,
+        errors=("fatal connector failure",),
+    )
+
+    # When: completion status is decided.
+    status = decide_workflow_status(signals)
+
+    # Then: a fatal pipeline error remains authoritative and cannot be masked by report quality.
+    assert status == TaskStatus.FAILED
+
+
+def test_policy_failed_when_prior_needs_more_sources_has_fatal_error() -> None:
+    # Given: a source-gap status exists, but a later fatal connector error was recorded with usable evidence.
+    signals = _signals(
+        prior_status=TaskStatus.NEEDS_MORE_SOURCES,
+        report_quality_passed=True,
+        errors=("fatal connector failure",),
+    )
+
+    # When: completion status is decided.
+    status = decide_workflow_status(signals)
+
+    # Then: fatal workflow failure remains stronger than the recoverable source-gap status.
     assert status == TaskStatus.FAILED
 
 

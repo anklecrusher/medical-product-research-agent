@@ -21,6 +21,7 @@ from medical_research_agent.schemas import (
     SourceRecord,
     SourceType,
 )
+from medical_research_agent.source_contracts import SourceStrategy
 
 
 def _utc_now() -> datetime:
@@ -87,6 +88,7 @@ class WorkflowState(TypedDict, total=False):
     task: ResearchTask
     intent: ResearchIntent
     research_plan: ResearchPlan
+    source_strategy: SourceStrategy
     sources: list[SourceRecord]
     rejected_sources: list[SourceRecord]
     documents: list[ParsedDocument]

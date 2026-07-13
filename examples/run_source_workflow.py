@@ -32,12 +32,18 @@ def main() -> None:
     ]
 
     print(f"Task: {state['task'].task_id}")
+    print(f"Status: {state['task'].status.value}")
     print(f"Sources: {len(state.get('sources', []))}")
     print(f"Documents: {len(state.get('documents', []))}")
     print(f"Evidence: {len(state.get('evidence', []))}")
     print(f"Claims: {len(state.get('claims', []))}")
     print(f"Artifacts: {len(state.get('artifacts', []))}")
     print(f"Errors: {len(state.get('errors', []))}")
+    quality = intermediate.get("report_quality")
+    if isinstance(quality, dict):
+        print(f"Report quality: passed={quality.get('passed')} score={quality.get('score')}")
+        for reason in quality.get("reasons", []):
+            print(f"- Quality: {reason}")
     print("Output artifacts:")
     for label, path in artifact_paths:
         if path:

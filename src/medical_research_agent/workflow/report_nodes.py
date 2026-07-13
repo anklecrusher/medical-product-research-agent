@@ -3,20 +3,29 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from medical_research_agent.claim_verifier import ClaimVerificationInputs, verify_claim_links
 from medical_research_agent.config import get_settings
+from medical_research_agent.llm.privacy import PRIVATE_SOURCE_TYPES
 from medical_research_agent.report_content import build_render_report
-from medical_research_agent.report_models import ReportInputs, evidence_gap_report_items, has_unresolved_evidence_gaps
+from medical_research_agent.report_models import (
+    ReportInputs,
+    citation_render_projection,
+    evidence_gap_report_items,
+    has_unresolved_evidence_gaps,
+    rejected_source_audit_items,
+)
 from medical_research_agent.report_outline import plan_report_outline
 from medical_research_agent.report_templates import render_report_markdown
-from medical_research_agent.report_writer import draft_evidence_report
 from medical_research_agent.renderers import render_markdown_pdf
-from medical_research_agent.schemas import ArtifactFormat, ReportArtifact
+from medical_research_agent.schemas import ArtifactFormat, ReportArtifact, SourceRecord, SourceType
 from medical_research_agent.workflow.state import NodeLog, WorkflowState, dump_workflow_state
 from medical_research_agent.workflow.status_policy import WorkflowCompletionSignals, decide_workflow_status
+from medical_research_agent.workflow.report_writer_nodes import draft_configured_report
+from medical_research_agent.workflow.quality_nodes import evaluate_rendered_quality
 
 
 def _log(node: str, message: str, **metadata: Any) -> list[NodeLog]:
@@ -42,6 +51,10 @@ def _report_inputs(state: WorkflowState) -> ReportInputs:
     )
 
 
+def _public_sources(sources: list[SourceRecord]) -> list[SourceRecord]:
+    return [source for source in sources if SourceType(source.source_type) not in PRIVATE_SOURCE_TYPES]
+
+
 def plan_report(state: WorkflowState) -> dict[str, Any]:
     """Create report sections that downstream writers can fill."""
 
@@ -58,13 +71,25 @@ def plan_report(state: WorkflowState) -> dict[str, Any]:
 def write_report(state: WorkflowState) -> dict[str, Any]:
     """Draft report sections and claims from extracted evidence."""
 
-    draft = draft_evidence_report(_report_inputs(state))
+    draft = draft_configured_report(_report_inputs(state))
     return {
         "report_sections": draft.sections,
         "claims": draft.claims,
         "current_step": "write_report",
-        "intermediate": {"claim_count": len(draft.claims)},
-        "node_logs": _log("write_report", "Drafted evidence-driven report sections and claims.", claim_count=len(draft.claims)),
+        "intermediate": {
+            "claim_count": len(draft.claims),
+            "llm_report_used": draft.external_llm_used,
+            "llm_report_needs_review": draft.needs_review,
+            "llm_report_errors": list(draft.errors),
+        },
+        "errors": [f"llm_report:{error}" for error in draft.errors],
+        "node_logs": _log(
+            "write_report",
+            "Drafted evidence-grounded report sections and claims.",
+            claim_count=len(draft.claims),
+            llm_report_used=draft.external_llm_used,
+            llm_report_needs_review=draft.needs_review,
+        ),
     }
 
 
@@ -110,8 +135,11 @@ def render_outputs(state: WorkflowState) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     report_inputs = _report_inputs(state)
-    report = build_render_report(report_inputs)
-    markdown = render_report_markdown(report)
+    citation_projection = citation_render_projection(_public_sources(report_inputs.sources))
+    rejected_audit = rejected_source_audit_items(_public_sources(state.get("rejected_sources", [])))
+    source_audit = [*citation_projection.audit_items, *rejected_audit]
+    report = build_render_report(replace(report_inputs, sources=citation_projection.references))
+    markdown = render_report_markdown(report, source_audit=source_audit)
 
     report_path = output_dir / "report.md"
     pdf_path = output_dir / "report.pdf"
@@ -133,6 +161,7 @@ def render_outputs(state: WorkflowState) -> dict[str, Any]:
         "claims_path": str(claims_path),
         "state_path": str(state_path),
         "log_path": str(log_path),
+        "citation_audit_count": len(source_audit),
     }
 
     report_path.write_text(markdown, encoding="utf-8")
@@ -162,6 +191,13 @@ def render_outputs(state: WorkflowState) -> dict[str, Any]:
     )
 
     pdf_result = render_markdown_pdf(markdown, pdf_path, title=task.title)
+    quality_snapshot = evaluate_rendered_quality(
+        markdown,
+        state.get("sources", []),
+        state.get("claims", []),
+        pdf_result.path,
+    )
+    render_intermediate["report_quality"] = quality_snapshot.model_dump(mode="json")
     completed_status = decide_workflow_status(
         WorkflowCompletionSignals(
             accepted_source_count=len(state.get("sources", [])),
@@ -170,6 +206,9 @@ def render_outputs(state: WorkflowState) -> dict[str, Any]:
             claim_count=len(state.get("claims", [])),
             source_quality_status=state.get("intermediate", {}).get("source_quality_status"),
             has_unresolved_evidence_gaps=has_unresolved_evidence_gaps(report_inputs),
+            prior_status=task.status,
+            report_quality_passed=quality_snapshot.passed,
+            report_quality_reasons=quality_snapshot.reasons,
             errors=tuple(state.get("errors", [])),
         )
     )
@@ -197,6 +236,9 @@ def render_outputs(state: WorkflowState) -> dict[str, Any]:
         report_path=str(report_path),
         pdf_path=str(pdf_result.path),
         rejected_sources_path=str(rejected_sources_path),
+        citation_audit_count=len(source_audit),
+        report_quality_passed=quality_snapshot.passed,
+        report_quality_score=quality_snapshot.score,
         pdf_font=pdf_result.font_name,
         pdf_warnings=pdf_result.warnings,
     )

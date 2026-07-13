@@ -38,8 +38,12 @@ def _core_conclusions(inputs: ReportInputs) -> list[str]:
         conclusions.extend(missing_gaps)
         return conclusions
 
+    source_link = _first_public_source_link(inputs.sources)
+    evidence_summary = f"本次草稿整理了 {len(inputs.evidence)} 条证据和 {len(inputs.product_specs)} 条产品参数，所有关键表述需回到 evidence_id/source_id 核查。"
+    if source_link:
+        evidence_summary = f"{evidence_summary} 公开可引用来源示例：[直达链接]({source_link})。"
     conclusions = [
-        f"本次草稿整理了 {len(inputs.evidence)} 条证据和 {len(inputs.product_specs)} 条产品参数，所有关键表述需回到 evidence_id/source_id 核查。",
+        evidence_summary,
         "厂商参数、论文发现、监管资料和本地资料已分开呈现；不同来源类型不能互相替代。",
     ]
     conclusions.extend(missing_gaps)
@@ -51,6 +55,13 @@ def _core_conclusions(inputs: ReportInputs) -> list[str]:
     if review_count:
         conclusions.append(f"仍有 {review_count} 条证据为 needs_review 或 conflicting，不能写成确定结论。")
     return conclusions
+
+
+def _first_public_source_link(sources: list[SourceRecord]) -> str | None:
+    for source in sources:
+        if source.url:
+            return str(source.url)
+    return None
 
 
 def _risks_and_gaps(inputs: ReportInputs) -> list[str]:

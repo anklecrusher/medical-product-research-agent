@@ -13,8 +13,13 @@ from medical_research_agent.connectors.base import (
     SearchRequest,
     SourceConnector,
     connector_error_from_http_status,
+    json_object_response,
+    object_items,
+    object_value,
 )
+from medical_research_agent.connectors.literature_access import attach_access_metadata
 from medical_research_agent.schemas import SourceRecord, SourceType
+from medical_research_agent.source_contracts import FreeAccessStatus
 
 
 class PubMedConnector(SourceConnector):
@@ -32,7 +37,7 @@ class PubMedConnector(SourceConnector):
         api_key: str | None = None,
         timeout_seconds: float = 20.0,
     ) -> None:
-        self._client = client or httpx.Client(timeout=timeout_seconds, follow_redirects=True)
+        super().__init__(client=client, timeout_seconds=timeout_seconds)
         self.email = email
         self.api_key = api_key
 
@@ -69,8 +74,9 @@ class PubMedConnector(SourceConnector):
         }
         response = self._client.get(self.search_url, params=params)
         response.raise_for_status()
-        data = response.json()
-        return [str(item) for item in data.get("esearchresult", {}).get("idlist", [])]
+        data = json_object_response(response, self.name)
+        raw_ids = object_value(data.get("esearchresult")).get("idlist")
+        return [str(item) for item in raw_ids] if isinstance(raw_ids, list) else []
 
     def _fetch_summaries(self, pmids: list[str]) -> list[dict[str, Any]]:
         params = {
@@ -80,31 +86,35 @@ class PubMedConnector(SourceConnector):
         }
         response = self._client.get(self.summary_url, params=params)
         response.raise_for_status()
-        data = response.json()
-        result = data.get("result", {})
-        return [result[pmid] for pmid in result.get("uids", []) if pmid in result]
+        data = json_object_response(response, self.name)
+        result = object_value(data.get("result"))
+        uids = result.get("uids")
+        if not isinstance(uids, list):
+            return []
+        return object_items([result.get(str(pmid)) for pmid in uids])
 
     def _summary_to_source(self, summary: dict[str, Any], request: SearchRequest) -> SourceRecord:
         pmid = str(summary.get("uid", "")).strip()
         authors = [
-            author.get("name", "").strip()
-            for author in summary.get("authors", [])
-            if author.get("name", "").strip()
+            name
+            for author in object_items(summary.get("authors"))
+            for name in (_clean_text(author.get("name")),)
+            if name is not None
         ]
-        article_ids = summary.get("articleids", [])
+        article_ids = object_items(summary.get("articleids"))
         doi = next(
             (item.get("value") for item in article_ids if item.get("idtype") == "doi" and item.get("value")),
             None,
         )
-        published_at = _parse_pubmed_date(summary.get("pubdate") or summary.get("epubdate"))
+        published_at = _parse_pubmed_date(_clean_text(summary.get("pubdate")) or _clean_text(summary.get("epubdate")))
         url = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else None
 
-        return SourceRecord(
+        source = SourceRecord(
             task_id=request.task_id,
             source_type=SourceType.PUBLIC_LITERATURE,
-            title=summary.get("title") or f"PubMed record {pmid}",
+            title=_clean_text(summary.get("title")) or f"PubMed record {pmid}",
             url=url,
-            publisher=summary.get("source") or "PubMed",
+            publisher=_clean_text(summary.get("source")) or "PubMed",
             authors=authors,
             published_at=published_at,
             search_query=request.query,
@@ -120,6 +130,11 @@ class PubMedConnector(SourceConnector):
                 "pages": summary.get("pages"),
             },
         )
+        return attach_access_metadata(
+            source,
+            status=FreeAccessStatus.ABSTRACT_ACCESSIBLE,
+            evidence_note="PubMed item-level abstract page is publicly accessible.",
+        )
 
 
 def _parse_pubmed_date(value: str | None) -> datetime | None:
@@ -132,7 +147,10 @@ def _parse_pubmed_date(value: str | None) -> datetime | None:
     year = int(parts[0])
     month = _month_number(parts[1]) if len(parts) > 1 else 1
     day = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
-    return datetime(year, month, day, tzinfo=timezone.utc)
+    try:
+        return datetime(year, month, day, tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
 
 def _month_number(value: str) -> int:
@@ -153,3 +171,9 @@ def _month_number(value: str) -> int:
     if value.isdigit():
         return max(1, min(12, int(value)))
     return months.get(value[:3].lower(), 1)
+
+
+def _clean_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return value.strip() or None

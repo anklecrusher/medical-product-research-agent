@@ -24,7 +24,6 @@ FOLLOW_UP_TERMS: Final[tuple[str, ...]] = (
     "programming interface",
     "instructions for use",
 )
-FOLLOW_UP_CONNECTORS: Final[tuple[str, ...]] = ("duckduckgo_html",)
 EXCLUDED_REQUIRED_FACETS: Final[set[ResearchFacetKind]] = {
     ResearchFacetKind.GENERIC_BACKGROUND,
     ResearchFacetKind.PRIVATE_LOCAL_DOCS,
@@ -166,7 +165,7 @@ def _follow_up_item(plan: ResearchPlan, gap: EvidenceGap, follow_up_round: int) 
         rationale=f"follow-up for missing {gap.facet.value}: {gap.description}",
         facet=gap.facet,
         expanded_terms=list(terms),
-        preferred_connectors=list(FOLLOW_UP_CONNECTORS),
+        preferred_connectors=list(_planned_connectors_for_gap(plan, gap, source_type)),
         route_priority=5,
         limit=FOLLOW_UP_LIMIT,
         metadata={
@@ -181,6 +180,20 @@ def _follow_up_source_type(gap: EvidenceGap) -> SourceType:
     if SourceType.VENDOR_PUBLIC_DOC in gap.required_source_types:
         return SourceType.VENDOR_PUBLIC_DOC
     return SourceType.PUBLIC_WEB
+
+
+def _planned_connectors_for_gap(
+    plan: ResearchPlan,
+    gap: EvidenceGap,
+    source_type: SourceType,
+) -> tuple[str, ...]:
+    preferred = tuple(
+        connector
+        for item in plan.search_items
+        if item.facet == gap.facet and item.source_type == source_type
+        for connector in item.preferred_connectors
+    )
+    return _unique(preferred)
 
 
 def _unique(values: tuple[str, ...]) -> tuple[str, ...]:
